@@ -10,7 +10,7 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.7.1"
     }
-    time = { # Ensure this provider is declared
+    time = {
       source  = "hashicorp/time"
       version = ">= 0.7.0"
     }
@@ -29,11 +29,30 @@ provider "aws" {
   region = var.aws_region
 }
 
+# The Kubernetes provider configuration is crucial here.
 provider "kubernetes" {
+  # Use the actual cluster endpoint, which should be the public one if configured.
+  # Ensure the data.aws_eks_cluster output is available before this provider is configured.
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
-  # No need for insecure_skip_tls_verify unless specifically debugging TLS
+  
+  # Option 1 (prefer this if it works): Use direct token from data source
+  token = data.aws_eks_cluster_auth.cluster.token
+
+  # Option 2 (more robust for authentication, uncomment if Option 1 fails AFTER connectivity is resolved):
+  # exec {
+  #   api_version = "client.authentication.k8s.io/v1beta1"
+  #   command     = "aws"
+  #   args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.aws_region]
+  # }
+
+  # Increased timeout for the Kubernetes provider itself
+  # This makes the provider wait longer for API responses
+  # Set to a higher value to give it ample time
+  timeout = "10m" # Increase from default (usually 5m)
+
+  # ONLY FOR DEBUGGING TLS ISSUES - DO NOT USE IN PRODUCTION
+  # insecure_skip_tls_verify = true
 }
 
 variable "aws_region" {
@@ -104,7 +123,7 @@ resource "aws_security_group" "all_worker_mgmt" {
 
 module "eks" {
   source          = "terraform-aws-modules/eks/aws"
-  version         = "20.8.4" # Stay with this version if forced, otherwise upgrade to latest stable
+  version         = "20.8.4"
   cluster_name    = var.cluster_name
   cluster_version = var.kubernetes_version
   subnet_ids      = module.vpc.private_subnets
@@ -131,37 +150,34 @@ module "eks" {
     cluster = "demo"
   }
 
-  # Keep public and private access enabled.
-  # If running from local machine, public access is required.
+  # Ensure both public and private access are enabled
   cluster_endpoint_public_access  = true
   cluster_endpoint_private_access = true
 
-  # Use 'cluster_timeouts' for the module version 20.8.4
-  # This passes the timeouts down to the underlying aws_eks_cluster resource.
+  # Pass timeouts to the underlying aws_eks_cluster resource using 'cluster_timeouts'
   cluster_timeouts = {
-    create = "60m" # EKS cluster creation can take 20-40 minutes
+    create = "60m"
     update = "60m"
     delete = "60m"
   }
-  # Removed: wait_for_cluster_endpoint = true (not directly supported as input in this module version)
 }
 
 data "aws_eks_cluster_auth" "cluster" {
-  depends_on = [module.eks]
+  depends_on = [module.eks] # This ensures EKS cluster creation completes first
   name       = var.cluster_name
 }
 
-# **CRITICAL for this module version:** Add an explicit time_sleep to allow API server to fully stabilize
-# This is the primary mechanism to address API readiness in module 20.8.4
+# Add a time_sleep to allow the EKS API server to fully stabilize after creation
+# This is crucial for initial Kubernetes provider connection.
 resource "time_sleep" "wait_for_eks_api_stability" {
-  depends_on      = [module.eks] # Ensure EKS cluster creation (and internal waits) are done
-  create_duration = "180s"       # INCREASED: Start with a higher duration, e.g., 3 minutes.
-                                 # You might need to increase this further if timeouts persist.
+  depends_on      = [module.eks] # Depends on the EKS module completing its creation
+  create_duration = "300s"       # **INCREASED:** Try 5 minutes (300 seconds)
+                                 # If still failing, increase to 420s (7 min) or 600s (10 min)
 }
 
-# Resource to wait for EKS API server to be ready and reachable
+# This null_resource now acts as a robust check and a hard dependency
 resource "null_resource" "eks_api_ready" {
-  depends_on = [module.eks, time_sleep.wait_for_eks_api_stability] # Depend on time_sleep now
+  depends_on = [module.eks, time_sleep.wait_for_eks_api_stability] # Ensures EKS is created AND sleep completes
 
   provisioner "local-exec" {
     command = <<-EOT
@@ -175,13 +191,12 @@ resource "null_resource" "eks_api_ready" {
       aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig $KUBECONFIG_PATH --alias ${var.cluster_name}-tf-managed
 
       echo "Verifying kubectl access using the specific kubeconfig and context..."
-      # Verify kubectl can connect after kubeconfig update
-      # Use a loop with retries for kubectl verification
       RETRY_COUNT=0
-      MAX_RETRIES=10
+      MAX_RETRIES=20 # Increased retries
+      RETRY_INTERVAL=15 # Increased interval to 15 seconds
       while ! kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        echo "kubectl access failed. Retrying in 15s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
-        sleep 15
+        echo "kubectl access failed. Retrying in ${RETRY_INTERVAL}s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
+        sleep $RETRY_INTERVAL
         RETRY_COUNT=$((RETRY_COUNT+1))
       done
 
@@ -189,7 +204,8 @@ resource "null_resource" "eks_api_ready" {
         echo "kubectl access confirmed after $((RETRY_COUNT)) retries."
         exit 0
       else
-        echo "kubectl access failed after $MAX_RETRIES attempts. Manual intervention may be needed."
+        echo "kubectl access still failed after $MAX_RETRIES attempts. This indicates a persistent connectivity issue to the EKS API."
+        echo "Possible reasons: Network ACLs, Security Groups, DNS resolution, or EKS control plane not fully healthy."
         exit 1
       fi
     EOT
@@ -199,8 +215,7 @@ resource "null_resource" "eks_api_ready" {
 
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
-  # Depend on both the EKS module and the time_sleep for robust ordering
-  depends_on = [module.eks, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
+  depends_on = [null_resource.eks_api_ready] # Explicitly depend on this check
   metadata {
     name = "nginx-deployment"
     labels = {
@@ -234,7 +249,7 @@ resource "kubernetes_deployment" "nginx_app" {
 }
 
 resource "kubernetes_service" "nginx_service" {
-  depends_on = [kubernetes_deployment.nginx_app, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
+  depends_on = [kubernetes_deployment.nginx_app] # This is sufficient if kubernetes_deployment depends correctly
   metadata {
     name = "nginx-service"
     labels = {
@@ -248,15 +263,15 @@ resource "kubernetes_service" "nginx_service" {
     port {
       port        = 80
       target_port = 80
-      node_port   = 30080 # Example NodePort, ensure it's in the valid range (30000-32767)
+      node_port   = 30080
     }
-    type = "NodePort" # Expose the service via NodePort
+    type = "NodePort"
   }
 }
 
 # --- ArgoCD Installation ---
 resource "kubernetes_namespace" "argocd" {
-  depends_on = [module.eks, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
+  depends_on = [null_resource.eks_api_ready] # Explicitly depend on this check
   metadata {
     name = "argocd"
   }
@@ -344,7 +359,7 @@ spec:
       serviceAccountName: argocd-server
       containers:
       - name: argocd-server
-        image: argoproj/argocd:v2.10.0 # Using a specific stable version
+        image: argoproj/argocd:v2.10.0
         ports:
         - containerPort: 8080
         - containerPort: 443
@@ -368,7 +383,7 @@ spec:
   - name: https
     port: 443
     targetPort: 443
-  type: ClusterIP # Will be patched to LoadBalancer later
+  type: ClusterIP
 EOT
 )
 
@@ -379,22 +394,22 @@ EOT
 }
 
 resource "kubernetes_manifest" "argocd_install" {
-  depends_on = [kubernetes_namespace.argocd, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
+  depends_on = [kubernetes_namespace.argocd, null_resource.eks_api_ready]
   for_each   = { for i, manifest in local.argocd_manifests : "${lookup(manifest, "kind", "unknown")}-${lookup(manifest.metadata, "name", "unknown")}-${i}" => manifest }
   manifest   = each.value
 }
 
 resource "null_resource" "patch_argocd_server_service" {
-  depends_on = [kubernetes_manifest.argocd_install, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
+  depends_on = [kubernetes_manifest.argocd_install, null_resource.eks_api_ready]
 
   provisioner "local-exec" {
-    command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${var.cluster_name}-tf-managed" # Use the specific context
+    command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${var.cluster_name}-tf-managed"
     interpreter = ["bash", "-c"]
   }
 }
 
 resource "kubernetes_manifest" "nginx_argocd_app" {
-  depends_on = [null_resource.patch_argocd_server_service, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
+  depends_on = [null_resource.patch_argocd_server_service, null_resource.eks_api_ready]
 
   manifest = {
     apiVersion = "argoproj.io/v1alpha1"
