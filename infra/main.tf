@@ -60,6 +60,7 @@ module "vpc" {
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
 
+  # Safely slice availability zones up to the number available or 3 max
   azs = slice(
     data.aws_availability_zones.available.names,
     0,
@@ -77,7 +78,6 @@ module "vpc" {
   }
 }
 
-
 # Define the security group for EKS managed worker nodes (needed by the EKS module)
 resource "aws_security_group" "all_worker_mgmt" {
   name        = "${var.cluster_name}-worker-sg"
@@ -88,7 +88,7 @@ resource "aws_security_group" "all_worker_mgmt" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]  # Consider tightening this for production
+    cidr_blocks = ["0.0.0.0/0"]  # Consider restricting for production use
   }
 
   egress {
@@ -136,7 +136,8 @@ module "eks" {
 
 # Data source for EKS cluster auth token (needed by kubernetes provider)
 data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks.cluster_id
+  depends_on = [module.eks]
+  name       = module.eks.cluster_id
 }
 
 # Outputs
@@ -166,5 +167,7 @@ output "oidc_provider_arn" {
 
 output "zz_update_kubeconfig_command" {
   description = "Command to update kubeconfig for the cluster"
-  value       = format("aws eks update-kubeconfig --name %s --region %s", module.eks.cluster_id, var.aws_region)
+  value       = module.eks.cluster_id != null ? 
+    format("aws eks update-kubeconfig --name %s --region %s", module.eks.cluster_id, var.aws_region) :
+    "Cluster not created yet"
 }
