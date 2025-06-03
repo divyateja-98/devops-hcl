@@ -167,7 +167,7 @@ output "oidc_provider_arn" {
 
 output "zz_update_kubeconfig_command" {
   description = "Command to update kubeconfig for the cluster"
-  value       = module.eks.cluster_id != null ? 
+  value = module.eks.cluster_id != null ? 
     format("aws eks update-kubeconfig --name %s --region %s", module.eks.cluster_id, var.aws_region) :
     "Cluster not created yet"
 }
