@@ -29,10 +29,7 @@ provider "aws" {
   region = var.aws_region
 }
 
-# The Kubernetes provider configuration is crucial here.
 provider "kubernetes" {
-  # Use the actual cluster endpoint, which should be the public one if configured.
-  # Ensure the data.aws_eks_cluster output is available before this provider is configured.
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
   
@@ -46,13 +43,8 @@ provider "kubernetes" {
   #   args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.aws_region]
   # }
 
-  # Increased timeout for the Kubernetes provider itself
-  # This makes the provider wait longer for API responses
-  # Set to a higher value to give it ample time
-  timeout = "10m" # Increase from default (usually 5m)
-
-  # ONLY FOR DEBUGGING TLS ISSUES - DO NOT USE IN PRODUCTION
-  # insecure_skip_tls_verify = true
+  # REMOVED: timeout = "10m" -- This argument is not supported by the kubernetes provider in this version.
+  # Individual resource timeouts are configured within resource blocks if supported.
 }
 
 variable "aws_region" {
@@ -150,11 +142,9 @@ module "eks" {
     cluster = "demo"
   }
 
-  # Ensure both public and private access are enabled
   cluster_endpoint_public_access  = true
   cluster_endpoint_private_access = true
 
-  # Pass timeouts to the underlying aws_eks_cluster resource using 'cluster_timeouts'
   cluster_timeouts = {
     create = "60m"
     update = "60m"
@@ -163,27 +153,21 @@ module "eks" {
 }
 
 data "aws_eks_cluster_auth" "cluster" {
-  depends_on = [module.eks] # This ensures EKS cluster creation completes first
+  depends_on = [module.eks]
   name       = var.cluster_name
 }
 
-# Add a time_sleep to allow the EKS API server to fully stabilize after creation
-# This is crucial for initial Kubernetes provider connection.
 resource "time_sleep" "wait_for_eks_api_stability" {
-  depends_on      = [module.eks] # Depends on the EKS module completing its creation
-  create_duration = "300s"       # **INCREASED:** Try 5 minutes (300 seconds)
-                                 # If still failing, increase to 420s (7 min) or 600s (10 min)
+  depends_on      = [module.eks]
+  create_duration = "300s" # Keep at 5 minutes, or increase if necessary
 }
 
-# This null_resource now acts as a robust check and a hard dependency
 resource "null_resource" "eks_api_ready" {
-  depends_on = [module.eks, time_sleep.wait_for_eks_api_stability] # Ensures EKS is created AND sleep completes
+  depends_on = [module.eks, time_sleep.wait_for_eks_api_stability]
 
   provisioner "local-exec" {
     command = <<-EOT
       echo "Waiting for EKS cluster '${data.aws_eks_cluster_auth.cluster.name}' to be active..."
-      # Use aws eks wait cluster-active for a robust wait
-      # This waits until the EKS cluster state is 'ACTIVE'
       aws eks wait cluster-active --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region}
 
       echo "EKS cluster is active. Updating kubeconfig..."
@@ -192,8 +176,8 @@ resource "null_resource" "eks_api_ready" {
 
       echo "Verifying kubectl access using the specific kubeconfig and context..."
       RETRY_COUNT=0
-      MAX_RETRIES=20 # Increased retries
-      RETRY_INTERVAL=15 # Increased interval to 15 seconds
+      MAX_RETRIES=20
+      RETRY_INTERVAL=15 # Define RETRY_INTERVAL as a shell variable here
       while ! kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         echo "kubectl access failed. Retrying in ${RETRY_INTERVAL}s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
         sleep $RETRY_INTERVAL
@@ -215,7 +199,7 @@ resource "null_resource" "eks_api_ready" {
 
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
-  depends_on = [null_resource.eks_api_ready] # Explicitly depend on this check
+  depends_on = [null_resource.eks_api_ready]
   metadata {
     name = "nginx-deployment"
     labels = {
@@ -249,7 +233,7 @@ resource "kubernetes_deployment" "nginx_app" {
 }
 
 resource "kubernetes_service" "nginx_service" {
-  depends_on = [kubernetes_deployment.nginx_app] # This is sufficient if kubernetes_deployment depends correctly
+  depends_on = [kubernetes_deployment.nginx_app]
   metadata {
     name = "nginx-service"
     labels = {
@@ -271,7 +255,7 @@ resource "kubernetes_service" "nginx_service" {
 
 # --- ArgoCD Installation ---
 resource "kubernetes_namespace" "argocd" {
-  depends_on = [null_resource.eks_api_ready] # Explicitly depend on this check
+  depends_on = [null_resource.eks_api_ready]
   metadata {
     name = "argocd"
   }
