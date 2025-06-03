@@ -154,7 +154,8 @@ resource "null_resource" "eks_api_ready" {
   depends_on = [module.eks, time_sleep.wait_for_eks_api_stability]
 
   provisioner "local-exec" {
-    command = <<-EOT
+    # Use a quoted heredoc delimiter to prevent Terraform from interpolating $ signs within the script
+    command = <<"EOT"
       echo "Waiting for EKS cluster '${data.aws_eks_cluster_auth.cluster.name}' to be active..."
       aws eks wait cluster-active --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region}
 
@@ -187,7 +188,6 @@ resource "null_resource" "eks_api_ready" {
     interpreter = ["bash", "-c"]
   }
 }
-
 
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
