@@ -307,11 +307,19 @@ spec:
   type: ClusterIP # Will be patched to LoadBalancer later
 EOT
 )
+
+  # Parse the base64 decoded YAML into a list of manifests
+  argocd_manifests = [
+    for doc_str in split("---", base64decode(local.argocd_install_yaml)) :
+    yamldecode(doc_str) if trimspace(doc_str) != ""
+  ]
 }
 
+# Apply each ArgoCD manifest using a for_each loop
 resource "kubernetes_manifest" "argocd_install" {
   depends_on = [kubernetes_namespace.argocd]
-  manifest = yamldecode(base64decode(local.argocd_install_yaml))
+  for_each   = { for i, manifest in local.argocd_manifests : "${lookup(manifest, "kind", "unknown")}-${lookup(manifest.metadata, "name", "unknown")}-${i}" => manifest }
+  manifest   = each.value
 }
 
 # Patch the argocd-server service to type LoadBalancer
@@ -400,7 +408,7 @@ output "nginx_access_instructions" {
   value = <<-EOT
     To access the NGINX application:
     1. Get the Node IP: kubectl get nodes -o wide
-    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec[0].port[0].node_port}
+    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec.port[0].node_port}
     3. Alternatively, use kubectl port-forward:
        kubectl port-forward svc/nginx-service 8080:80
        Then access at: http://localhost:8080
