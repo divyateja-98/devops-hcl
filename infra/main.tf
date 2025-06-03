@@ -141,15 +141,16 @@ resource "null_resource" "eks_api_ready" {
       echo "Waiting for EKS API server to be ready..."
       MAX_ATTEMPTS=60 # Increased attempts for more robustness (e.g., 60 * 10 seconds = 10 minutes)
       ATTEMPT=0
-      KUBECONFIG_PATH="${HOME}/.kube/config" # Standard kubeconfig path
+      # Define KUBECONFIG_PATH as a shell variable within the command
+      KUBECONFIG_PATH="/tmp/kubeconfig-${var.cluster_name}" 
 
       # Ensure kubeconfig is updated for kubectl to connect to the EKS cluster
       # This is crucial for local-exec to interact with the cluster.
-      aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig ${KUBECONFIG_PATH}
+      aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig $KUBECONFIG_PATH
 
       while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
         # Attempt to list namespaces to verify API server readiness and authentication
-        if kubectl --kubeconfig ${KUBECONFIG_PATH} get ns &> /dev/null; then
+        if kubectl --kubeconfig $KUBECONFIG_PATH get ns &> /dev/null; then
           echo "EKS API server is ready and reachable."
           exit 0
         fi
