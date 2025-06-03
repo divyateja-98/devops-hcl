@@ -51,10 +51,8 @@ variable "vpc_cidr" {
   default = "10.0.0.0/16"
 }
 
-# Fetch available AZs
 data "aws_availability_zones" "available" {}
 
-# VPC Module Configuration
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "5.1.0"
@@ -62,7 +60,12 @@ module "vpc" {
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
 
-  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
+  azs = slice(
+    data.aws_availability_zones.available.names,
+    0,
+    min(3, length(data.aws_availability_zones.available.names))
+  )
+
   public_subnets  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
   private_subnets = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
@@ -73,6 +76,7 @@ module "vpc" {
     Name = "${var.cluster_name}-vpc"
   }
 }
+
 
 # Define the security group for EKS managed worker nodes (needed by the EKS module)
 resource "aws_security_group" "all_worker_mgmt" {
