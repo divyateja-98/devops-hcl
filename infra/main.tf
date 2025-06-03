@@ -10,9 +10,9 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.7.1"
     }
-    time = {
-      source  = "hashicorp/time"
-      version = ">= 0.7.0"
+    helm = {
+      source  = "hashicorp/helm"
+      version = ">= 2.12.1"
     }
   }
 
@@ -33,6 +33,40 @@ provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
   token                  = data.aws_eks_cluster_auth.cluster.token
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args = [
+      "eks",
+      "get-token",
+      "--cluster-name",
+      var.cluster_name,
+      "--region",
+      var.aws_region
+    ]
+  }
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    token                  = data.aws_eks_cluster_auth.cluster.token
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args = [
+        "eks",
+        "get-token",
+        "--cluster-name",
+        var.cluster_name,
+        "--region",
+        var.aws_region
+      ]
+    }
+  }
 }
 
 variable "aws_region" {
@@ -145,10 +179,59 @@ data "aws_eks_cluster_auth" "cluster" {
   name       = var.cluster_name
 }
 
+# Resource to wait for EKS API server to be ready and reachable
+resource "null_resource" "eks_api_ready" {
+  depends_on = [module.eks]
+
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for cluster to be active
+      echo "Waiting for EKS cluster to become active..."
+      aws eks wait cluster-active --name ${var.cluster_name} --region ${var.aws_region} || exit 1
+      
+      # Update kubeconfig
+      echo "Updating kubeconfig..."
+      aws eks update-kubeconfig --name ${var.cluster_name} --region ${var.aws_region} || exit 1
+      
+      # Wait for nodes to be ready
+      echo "Waiting for at least 2 nodes to be ready..."
+      MAX_RETRIES=30
+      RETRY_COUNT=0
+      RETRY_INTERVAL=10
+      
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep " Ready" | wc -l)
+        if [ "$READY_NODES" -ge 2 ]; then
+          echo "Found $READY_NODES nodes ready"
+          break
+        fi
+        echo "Only $READY_NODES nodes ready. Retrying in ${RETRY_INTERVAL}s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
+        sleep $RETRY_INTERVAL
+        RETRY_COUNT=$((RETRY_COUNT+1))
+      done
+      
+      if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        echo "Timed out waiting for nodes to be ready"
+        exit 1
+      fi
+      
+      # Verify API access
+      echo "Verifying API access..."
+      kubectl cluster-info || exit 1
+      echo "EKS cluster is ready!"
+    EOT
+    interpreter = ["bash", "-c"]
+  }
+}
+
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
-  # Now directly depends on the EKS module
-  depends_on = [module.eks]
+  depends_on = [null_resource.eks_api_ready]
+  
   metadata {
     name = "nginx-deployment"
     labels = {
@@ -183,6 +266,7 @@ resource "kubernetes_deployment" "nginx_app" {
 
 resource "kubernetes_service" "nginx_service" {
   depends_on = [kubernetes_deployment.nginx_app]
+  
   metadata {
     name = "nginx-service"
     labels = {
@@ -202,142 +286,47 @@ resource "kubernetes_service" "nginx_service" {
   }
 }
 
-# --- ArgoCD Installation ---
+# --- ArgoCD Installation using Helm ---
 resource "kubernetes_namespace" "argocd" {
-  # Now directly depends on the EKS module
-  depends_on = [module.eks]
+  depends_on = [null_resource.eks_api_ready]
+  
   metadata {
     name = "argocd"
   }
 }
 
-locals {
-  argocd_install_yaml = base64encode(<<-EOT
-apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    argocd.argoproj.io/secret-type: cluster
-  name: argocd
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  labels:
-    app.kubernetes.io/component: server
-    app.kubernetes.io/name: argocd-server
-    app.kubernetes.io/part-of: argocd
-  name: argocd-server
-  namespace: argocd
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  labels:
-    app.kubernetes.io/component: server
-    app.kubernetes.io/name: argocd-server
-    app.kubernetes.io/part-of: argocd
-  name: argocd-server
-  namespace: argocd
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  - pods/exec
-  verbs:
-  - create
-  - get
-  - list
-  - watch
-  - update
-  - patch
-  - delete
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  labels:
-    app.kubernetes.io/component: server
-    app.kubernetes.io/name: argocd-server
-    app.kubernetes.io/part-of: argocd
-  name: argocd-server
-  namespace: argocd
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: argocd-server
-subjects:
-- kind: ServiceAccount
-  name: argocd-server
-  namespace: argocd
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  labels:
-    app.kubernetes.io/component: server
-    app.kubernetes.io/name: argocd-server
-    app.kubernetes.io/part-of: argocd
-  name: argocd-server
-  namespace: argocd
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: argocd-server
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: argocd-server
-    spec:
-      serviceAccountName: argocd-server
-      containers:
-      - name: argocd-server
-        image: argoproj/argocd:v2.10.0
-        ports:
-        - containerPort: 8080
-        - containerPort: 443
----
-apiVersion: v1
-kind: Service
-metadata:
-  labels:
-    app.kubernetes.io/component: server
-    app.kubernetes.io/name: argocd-server
-    app.kubernetes.io/part-of: argocd
-  name: argocd-server
-  namespace: argocd
-spec:
-  selector:
-    app.kubernetes.io/name: argocd-server
-  ports:
-  - name: http
-    port: 80
-    targetPort: 8080
-  - name: https
-    port: 443
-    targetPort: 443
-  type: ClusterIP
-EOT
-)
-
-  argocd_manifests = [
-    for doc_str in split("---", base64decode(local.argocd_install_yaml)) :
-    yamldecode(doc_str) if trimspace(doc_str) != ""
-  ]
+resource "helm_release" "argocd" {
+  depends_on = [kubernetes_namespace.argocd]
+  
+  name       = "argocd"
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argo-cd"
+  version    = "5.46.8"
+  namespace  = "argocd"
+  
+  set {
+    name  = "server.service.type"
+    value = "LoadBalancer"
+  }
+  
+  set {
+    name  = "server.ingress.enabled"
+    value = "true"
+  }
+  
+  set {
+    name  = "server.ingress.hosts[0]"
+    value = "argocd.${var.cluster_name}.example.com"
+  }
+  
+  wait = true
+  timeout = 600
 }
 
-resource "kubernetes_manifest" "argocd_install" {
-  depends_on = [kubernetes_namespace.argocd] # Now depends directly on the namespace
-  for_each   = { for i, manifest in local.argocd_manifests : "${lookup(manifest, "kind", "unknown")}-${lookup(manifest.metadata, "name", "unknown")}-${i}" => manifest }
-  manifest   = each.value
-}
-
-# null_resource "patch_argocd_server_service" has been removed, as it relied on kubectl configuration from the removed null_resource.eks_api_ready.
-# You will need to manually patch the ArgoCD service to LoadBalancer type after apply.
-
+# ArgoCD Application resource for NGINX
 resource "kubernetes_manifest" "nginx_argocd_app" {
-  depends_on = [kubernetes_manifest.argocd_install] # Now depends directly on argocd_install
+  depends_on = [helm_release.argocd]
+  
   manifest = {
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
@@ -391,7 +380,7 @@ output "oidc_provider_arn" {
 }
 
 output "zz_update_kubeconfig_command" {
-  description = "Command to update kubeconfig for the cluster (run this manually after apply)"
+  description = "Command to update kubeconfig for the cluster"
   value       = (
     module.eks.cluster_id != "" && module.eks.cluster_id != null ?
     format("aws eks update-kubeconfig --name %s --region %s", var.cluster_name, var.aws_region) :
@@ -408,9 +397,9 @@ output "nginx_access_instructions" {
   description = "Instructions to access the NGINX application."
   value = <<-EOT
     To access the NGINX application:
-    1. FIRST, run the command from 'zz_update_kubeconfig_command' output to configure kubectl.
+    1. Run the command from 'zz_update_kubeconfig_command' output to configure kubectl
     2. Get the Node IP: kubectl get nodes -o wide
-    3. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec[0].port[0].node_port}
+    3. Access NGINX via NodePort: http://<NODE_IP>:30080
     4. Alternatively, use kubectl port-forward:
        kubectl port-forward svc/nginx-service 8080:80
        Then access at: http://localhost:8080
@@ -418,17 +407,15 @@ output "nginx_access_instructions" {
 }
 
 output "argocd_access_instructions" {
-  description = "Instructions to access the ArgoCD UI. NOTE: The ArgoCD service is initially ClusterIP. You will need to manually patch it to LoadBalancer."
+  description = "Instructions to access the ArgoCD UI."
   value = <<-EOT
     To access the ArgoCD UI:
-    1. FIRST, run the command from 'zz_update_kubeconfig_command' output to configure kubectl.
-    2. Manually patch the argocd-server service to LoadBalancer:
-       kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
-    3. Get the ArgoCD server LoadBalancer IP:
-       kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-    4. Access the UI at: https://<ARGOCD_LOADBALANCER_IP>
-    5. Get the initial admin password:
+    1. Run the command from 'zz_update_kubeconfig_command' output to configure kubectl
+    2. Get the ArgoCD server LoadBalancer hostname:
+       kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+    3. Access the UI at: https://<ARGOCD_LOADBALANCER_HOSTNAME>
+    4. Get the initial admin password:
        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-    6. Login with username 'admin' and the retrieved password.
+    5. Login with username 'admin' and the retrieved password
   EOT
 }
