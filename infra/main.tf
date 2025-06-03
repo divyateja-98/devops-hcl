@@ -26,8 +26,7 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  # Removed the depends_on argument from here as it's not supported in provider blocks.
-  # Individual Kubernetes resources will still depend on null_resource.eks_api_ready.
+  # Individual Kubernetes resources will depend on null_resource.eks_api_ready.
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
   token                  = data.aws_eks_cluster_auth.cluster.token
@@ -140,28 +139,23 @@ resource "null_resource" "eks_api_ready" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      echo "Waiting for EKS API server to be ready..."
-      MAX_ATTEMPTS=60 # Increased attempts for more robustness (e.g., 60 * 10 seconds = 10 minutes)
-      ATTEMPT=0
-      # Define KUBECONFIG_PATH as a shell variable within the command
-      KUBECONFIG_PATH="/tmp/kubeconfig-${var.cluster_name}" 
+      echo "Waiting for EKS cluster '${data.aws_eks_cluster_auth.cluster.name}' to be active..."
+      # Use aws eks wait cluster-active for a robust wait
+      aws eks wait cluster-active --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region}
 
-      # Ensure kubeconfig is updated for kubectl to connect to the EKS cluster
-      # This is crucial for local-exec to interact with the cluster.
+      echo "EKS cluster is active. Updating kubeconfig..."
+      KUBECONFIG_PATH="/tmp/kubeconfig-${var.cluster_name}" 
       aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig $KUBECONFIG_PATH
 
-      while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-        # Attempt to list namespaces to verify API server readiness and authentication
-        if kubectl --kubeconfig $KUBECONFIG_PATH get ns &> /dev/null; then
-          echo "EKS API server is ready and reachable."
-          exit 0
-        fi
-        echo "EKS API not ready yet. Retrying in 10 seconds..."
-        sleep 10
-        ATTEMPT=$((ATTEMPT+1))
-      done
-      echo "EKS API server did not become ready within the expected time."
-      exit 1
+      echo "Verifying kubectl access..."
+      # Verify kubectl can connect after kubeconfig update
+      if kubectl --kubeconfig $KUBECONFIG_PATH get ns &> /dev/null; then
+        echo "kubectl access confirmed."
+        exit 0
+      else
+        echo "kubectl access failed after kubeconfig update."
+        exit 1
+      fi
     EOT
     interpreter = ["bash", "-c"]
   }
