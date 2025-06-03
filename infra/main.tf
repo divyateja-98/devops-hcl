@@ -49,6 +49,14 @@ variable "vpc_cidr" {
 
 data "aws_availability_zones" "available" {}
 
+# Resource to create an Elastic IP for the NAT Gateway
+resource "aws_eip" "nat_gateway_eip" {
+  vpc        = true
+  tags = {
+    Name = "${var.cluster_name}-nat-gateway-eip"
+  }
+}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "5.1.0"
@@ -67,6 +75,8 @@ module "vpc" {
 
   enable_nat_gateway = true
   single_nat_gateway = true
+  # Associate the created EIP with the NAT Gateway
+  nat_gateway_eip_ids = [aws_eip.nat_gateway_eip.id]
 
   tags = {
     Name = "${var.cluster_name}-vpc"
@@ -163,4 +173,10 @@ output "zz_update_kubeconfig_command" {
     format("aws eks update-kubeconfig --name %s --region %s", var.cluster_name, var.aws_region) :
     "Cluster not created yet"
   )
+}
+
+# Output the allocated EIP address
+output "nat_gateway_eip_address" {
+  description = "The Elastic IP address allocated for the NAT Gateway."
+  value       = aws_eip.nat_gateway_eip.public_ip
 }
