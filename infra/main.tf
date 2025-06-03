@@ -196,125 +196,117 @@ resource "kubernetes_namespace" "argocd" {
   }
 }
 
-# Base64 encoded content of a simplified ArgoCD install.yaml
-# This includes Namespace, argocd-server Deployment, and argocd-server Service (initially ClusterIP)
-# For a full ArgoCD installation, consider using the Helm provider or applying the complete official YAML.
 locals {
-  argocd_install_yaml = base64encode(file("${path.module}/argocd-install-minimal.yaml"))
-  # Note: The 'argocd-install-minimal.yaml' file needs to be created in the same directory
-  # with the essential ArgoCD components. For a complete setup, it's recommended to
-  # download the official install.yaml (e.g., from https://raw.githubusercontent.com/argoproj/argo-cd/v2.10.0/manifests/install.yaml)
-  # and include its content here, or use the Helm provider.
-  # For this example, I'll embed a minimal set of components directly.
-  # In a real-world scenario, you would download the full install.yaml and reference it.
-  # As an example, I'm using a placeholder for the content.
-  #
-  # Actual content for argocd-install-minimal.yaml would be:
-  # apiVersion: v1
-  # kind: Namespace
-  # metadata:
-  #   labels:
-  #     argocd.argoproj.io/secret-type: cluster
-  #   name: argocd
-  # ---
-  # apiVersion: v1
-  # kind: ServiceAccount
-  # metadata:
-  #   labels:
-  #     app.kubernetes.io/component: server
-  #     app.kubernetes.io/name: argocd-server
-  #     app.kubernetes.io/part-of: argocd
-  #   name: argocd-server
-  #   namespace: argocd
-  # ---
-  # apiVersion: rbac.authorization.k8s.io/v1
-  # kind: Role
-  # metadata:
-  #   labels:
-  #     app.kubernetes.io/component: server
-  #     app.kubernetes.io/name: argocd-server
-  #     app.kubernetes.io/part-of: argocd
-  #   name: argocd-server
-  #   namespace: argocd
-  # rules:
-  # - apiGroups:
-  #   - ""
-  #   resources:
-  #   - pods
-  #   - pods/exec
-  #   verbs:
-  #   - create
-  #   - get
-  #   - list
-  #   - watch
-  #   - update
-  #   - patch
-  #   - delete
-  # ---
-  # apiVersion: rbac.authorization.k8s.io/v1
-  # kind: RoleBinding
-  # metadata:
-  #   labels:
-  #     app.kubernetes.io/component: server
-  #     app.kubernetes.io/name: argocd-server
-  #     app.kubernetes.io/part-of: argocd
-  #   name: argocd-server
-  #   namespace: argocd
-  # roleRef:
-  #   apiGroup: rbac.authorization.k8s.io
-  #   kind: Role
-  #   name: argocd-server
-  # subjects:
-  # - kind: ServiceAccount
-  #   name: argocd-server
-  #   namespace: argocd
-  # ---
-  # apiVersion: apps/v1
-  # kind: Deployment
-  # metadata:
-  #   labels:
-  #     app.kubernetes.io/component: server
-  #     app.kubernetes.io/name: argocd-server
-  #     app.kubernetes.io/part-of: argocd
-  #   name: argocd-server
-  #   namespace: argocd
-  # spec:
-  #   selector:
-  #     matchLabels:
-  #       app.kubernetes.io/name: argocd-server
-  #   template:
-  #     metadata:
-  #       labels:
-  #         app.kubernetes.io/name: argocd-server
-  #     spec:
-  #       serviceAccountName: argocd-server
-  #       containers:
-  #       - name: argocd-server
-  #         image: argoproj/argocd:v2.10.0 # Using a specific stable version
-  #         ports:
-  #         - containerPort: 8080
-  #         - containerPort: 443
-  # ---
-  # apiVersion: v1
-  # kind: Service
-  # metadata:
-  #   labels:
-  #     app.kubernetes.io/component: server
-  #     app.kubernetes.io/name: argocd-server
-  #     app.kubernetes.io/part-of: argocd
-  #   name: argocd-server
-  #   namespace: argocd
-  # spec:
-  #   selector:
-  #     app.kubernetes.io/name: argocd-server
-  #   ports:
-  #   - name: http
-  #     port: 80
-  #     targetPort: 8080
-  #   - name: https
-  #     port: 443
-  #     targetPort: 443
-  #   type: ClusterIP # Will be patched to LoadBalancer later
+  # Embedded content of a minimal ArgoCD install.yaml
+  # This avoids the "no file exists" error by including the YAML directly.
+  argocd_install_yaml = base64encode(<<-EOT
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+  name: argocd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - pods/exec
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-server
+subjects:
+- kind: ServiceAccount
+  name: argocd-server
+  namespace: argocd
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argocd-server
+    spec:
+      serviceAccountName: argocd-server
+      containers:
+      - name: argocd-server
+        image: argoproj/argocd:v2.10.0 # Using a specific stable version
+        ports:
+        - containerPort: 8080
+        - containerPort: 443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+spec:
+  selector:
+    app.kubernetes.io/name: argocd-server
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: https
+    port: 443
+    targetPort: 443
+  type: ClusterIP # Will be patched to LoadBalancer later
+EOT
+)
 }
 
 resource "kubernetes_manifest" "argocd_install" {
@@ -408,7 +400,7 @@ output "nginx_access_instructions" {
   value = <<-EOT
     To access the NGINX application:
     1. Get the Node IP: kubectl get nodes -o wide
-    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec.0.node_port}
+    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec[0].port[0].node_port}
     3. Alternatively, use kubectl port-forward:
        kubectl port-forward svc/nginx-service 8080:80
        Then access at: http://localhost:8080
