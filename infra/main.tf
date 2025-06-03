@@ -49,17 +49,16 @@ variable "vpc_cidr" {
 
 data "aws_availability_zones" "available" {}
 
-# Resource to create an Elastic IP for the NAT Gateway
-resource "aws_eip" "nat_gateway_eip" {
-  vpc        = true
-  tags = {
-    Name = "${var.cluster_name}-nat-gateway-eip"
-  }
-  # Prevent accidental deletion of the EIP
-  lifecycle {
-    prevent_destroy = true
-  }
-}
+# Removed the explicit aws_eip resource as the VPC module handles EIP creation for NAT Gateways.
+# resource "aws_eip" "nat_gateway_eip" {
+#   vpc        = true
+#   tags = {
+#     Name = "${var.cluster_name}-nat-gateway-eip"
+#   }
+#   lifecycle {
+#     prevent_destroy = true
+#   }
+# }
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
@@ -79,8 +78,8 @@ module "vpc" {
 
   enable_nat_gateway = true
   single_nat_gateway = true
-  # Associate the created EIP with the NAT Gateway
-  nat_gateway_eip_ids = [aws_eip.nat_gateway_eip.id]
+  # Removed the unsupported 'nat_gateway_eip_ids' argument.
+  # The VPC module will automatically create an EIP for the NAT Gateway.
 
   tags = {
     Name = "${var.cluster_name}-vpc"
@@ -179,8 +178,8 @@ output "zz_update_kubeconfig_command" {
   )
 }
 
-# Output the allocated EIP address
+# Output the allocated EIP address directly from the VPC module's output
 output "nat_gateway_eip_address" {
   description = "The Elastic IP address allocated for the NAT Gateway."
-  value       = aws_eip.nat_gateway_eip.public_ip
+  value       = module.vpc.nat_public_ips[0] # Accessing the first EIP from the list of NAT public IPs
 }
