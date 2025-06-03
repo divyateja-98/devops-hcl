@@ -1,0 +1,134 @@
+# Define the Terraform backend and provider configurations
+terraform {
+  required_version = ">= 0.12"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 3.68.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = ">= 2.7.1"
+    }
+  }
+
+  backend "s3" {
+    bucket         = "your-tf-state-bucket-name"  # Your S3 bucket for Terraform state
+    key            = "eks-cluster/terraform.tfstate"  # Path to your state file in S3
+    region         = "us-west-1"  # AWS Region
+    encrypt        = true
+    dynamodb_table = "your-dynamodb-table"  # DynamoDB table for locking state
+  }
+}
+
+# AWS Provider Configuration
+provider "aws" {
+  region = var.aws_region
+}
+
+# Kubernetes provider for accessing the EKS cluster after it's created
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = module.eks.cluster_certificate_authority_data
+  token                  = data.aws_eks_cluster_auth.cluster.token
+}
+
+# Declare variables for flexibility
+variable "aws_region" {
+  default = "us-west-1"
+}
+
+variable "kubernetes_version" {
+  default = "1.27"
+}
+
+variable "cluster_name" {
+  default = "my-cluster"
+}
+
+variable "vpc_cidr" {
+  default = "10.0.0.0/16"
+}
+
+# VPC Module Configuration
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.1.0"
+
+  name = "${var.cluster_name}-vpc"
+  cidr = var.vpc_cidr
+
+  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
+  public_subnets  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  private_subnets = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  tags = {
+    Name = "${var.cluster_name}-vpc"
+  }
+}
+
+data "aws_availability_zones" "available" {}
+
+# EKS Cluster Setup
+module "eks" {
+  source          = "terraform-aws-modules/eks/aws"
+  version         = "20.8.4"
+  cluster_name    = var.cluster_name
+  cluster_version = var.kubernetes_version
+  subnet_ids      = module.vpc.private_subnets
+
+  enable_irsa = true
+
+  vpc_id = module.vpc.vpc_id
+
+  eks_managed_node_group_defaults = {
+    ami_type               = "AL2_x86_64"
+    instance_types         = ["t3.medium"]
+    vpc_security_group_ids = [aws_security_group.all_worker_mgmt.id]
+  }
+
+  eks_managed_node_groups = {
+    node_group = {
+      min_size     = 2
+      max_size     = 6
+      desired_size = 2
+    }
+  }
+
+  tags = {
+    cluster = "demo"
+  }
+}
+
+# Outputs
+output "cluster_id" {
+  description = "EKS cluster ID."
+  value       = module.eks.cluster_id
+}
+
+output "cluster_endpoint" {
+  description = "Endpoint for EKS control plane."
+  value       = module.eks.cluster_endpoint
+}
+
+output "cluster_security_group_id" {
+  description = "Security group ids attached to the cluster control plane."
+  value       = module.eks.cluster_security_group_id
+}
+
+output "region" {
+  description = "AWS region"
+  value       = var.aws_region
+}
+
+output "oidc_provider_arn" {
+  value = module.eks.oidc_provider_arn
+}
+
+output "zz_update_kubeconfig_command" {
+  value = format("%s %s %s %s", "aws eks update-kubeconfig --name", module.eks.cluster_id, "--region", var.aws_region)
+}
