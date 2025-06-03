@@ -132,22 +132,25 @@ data "aws_eks_cluster_auth" "cluster" {
   name       = var.cluster_name
 }
 
-# Resource to wait for EKS API server to be ready
+# Resource to wait for EKS API server to be ready and reachable
 resource "null_resource" "eks_api_ready" {
   depends_on = [module.eks] # Ensure EKS cluster creation is initiated
 
   provisioner "local-exec" {
-    # This command assumes kubectl is configured to connect to the EKS cluster
-    # by an external process (e.g., a GitHub Actions step running `aws eks update-kubeconfig`).
-    # It waits for the API server to be reachable before proceeding.
     command = <<-EOT
       echo "Waiting for EKS API server to be ready..."
-      MAX_ATTEMPTS=30 # Max attempts (e.g., 30 * 10 seconds = 5 minutes)
+      MAX_ATTEMPTS=60 # Increased attempts for more robustness (e.g., 60 * 10 seconds = 10 minutes)
       ATTEMPT=0
+      KUBECONFIG_PATH="${HOME}/.kube/config" # Standard kubeconfig path
+
+      # Ensure kubeconfig is updated for kubectl to connect to the EKS cluster
+      # This is crucial for local-exec to interact with the cluster.
+      aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig ${KUBECONFIG_PATH}
+
       while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-        # Use --raw=/healthz to check the API server's health endpoint
-        if kubectl get --raw=/healthz --context ${data.aws_eks_cluster_auth.cluster.name} &> /dev/null; then
-          echo "EKS API server is ready."
+        # Attempt to list namespaces to verify API server readiness and authentication
+        if kubectl --kubeconfig ${KUBECONFIG_PATH} get ns &> /dev/null; then
+          echo "EKS API server is ready and reachable."
           exit 0
         fi
         echo "EKS API not ready yet. Retrying in 10 seconds..."
