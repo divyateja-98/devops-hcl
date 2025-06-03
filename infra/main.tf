@@ -189,37 +189,33 @@ resource "null_resource" "eks_api_ready" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      # Wait for cluster to be active
       echo "Waiting for EKS cluster to become active..."
       aws eks wait cluster-active --name ${var.cluster_name} --region ${var.aws_region} || exit 1
-      
-      # Update kubeconfig
+
       echo "Updating kubeconfig..."
       aws eks update-kubeconfig --name ${var.cluster_name} --region ${var.aws_region} || exit 1
-      
-      # Wait for nodes to be ready
+
       echo "Waiting for at least 2 nodes to be ready..."
       MAX_RETRIES=30
       RETRY_COUNT=0
       RETRY_INTERVAL=10
-      
-      while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep " Ready" | wc -l)
-        if [ "$READY_NODES" -ge 2 ]; then
-          echo "Found $READY_NODES nodes ready"
+
+      while [ $$RETRY_COUNT -lt $$MAX_RETRIES ]; do
+        READY_NODES=$$(kubectl get nodes --no-headers 2>/dev/null | grep " Ready" | wc -l)
+        if [ "$$READY_NODES" -ge 2 ]; then
+          echo "Found $$READY_NODES nodes ready"
           break
         fi
-        echo "Only $READY_NODES nodes ready. Retrying in ${RETRY_INTERVAL}s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
-        sleep $RETRY_INTERVAL
-        RETRY_COUNT=$((RETRY_COUNT+1))
+        echo "Only $$READY_NODES nodes ready. Retrying in $${RETRY_INTERVAL}s... (Attempt $$(($$RETRY_COUNT+1))/$$MAX_RETRIES)"
+        sleep $$RETRY_INTERVAL
+        RETRY_COUNT=$$((RETRY_COUNT+1))
       done
-      
-      if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+
+      if [ $$RETRY_COUNT -eq $$MAX_RETRIES ]; then
         echo "Timed out waiting for nodes to be ready"
         exit 1
       fi
-      
-      # Verify API access
+
       echo "Verifying API access..."
       kubectl cluster-info || exit 1
       echo "EKS cluster is ready!"
@@ -227,6 +223,7 @@ resource "null_resource" "eks_api_ready" {
     interpreter = ["bash", "-c"]
   }
 }
+
 
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
