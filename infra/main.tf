@@ -206,7 +206,7 @@ resource "null_resource" "eks_api_ready" {
           echo "Found $$READY_NODES nodes ready"
           break
         fi
-        echo "Only $$READY_NODES nodes ready. Retrying in $${RETRY_INTERVAL}s... (Attempt $$(($$RETRY_COUNT+1))/$$MAX_RETRIES)"
+        echo "Only $$READY_NODES nodes ready. Retrying in $${RETRY_INTERVAL}s... (Attempt $$((RETRY_COUNT+1))/$$MAX_RETRIES)"
         sleep $$RETRY_INTERVAL
         RETRY_COUNT=$$((RETRY_COUNT+1))
       done
@@ -223,6 +223,7 @@ resource "null_resource" "eks_api_ready" {
     interpreter = ["bash", "-c"]
   }
 }
+
 
 
 # --- NGINX Application Deployment ---
