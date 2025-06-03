@@ -49,17 +49,6 @@ variable "vpc_cidr" {
 
 data "aws_availability_zones" "available" {}
 
-# Removed the explicit aws_eip resource as the VPC module handles EIP creation for NAT Gateways.
-# resource "aws_eip" "nat_gateway_eip" {
-#   vpc        = true
-#   tags = {
-#     Name = "${var.cluster_name}-nat-gateway-eip"
-#   }
-#   lifecycle {
-#     prevent_destroy = true
-#   }
-# }
-
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "5.1.0"
@@ -78,8 +67,6 @@ module "vpc" {
 
   enable_nat_gateway = true
   single_nat_gateway = true
-  # Removed the unsupported 'nat_gateway_eip_ids' argument.
-  # The VPC module will automatically create an EIP for the NAT Gateway.
 
   tags = {
     Name = "${var.cluster_name}-vpc"
@@ -145,6 +132,238 @@ data "aws_eks_cluster_auth" "cluster" {
   name       = var.cluster_name
 }
 
+# --- NGINX Application Deployment ---
+resource "kubernetes_deployment" "nginx_app" {
+  depends_on = [module.eks] # Ensure EKS is ready before deploying applications
+  metadata {
+    name = "nginx-deployment"
+    labels = {
+      app = "nginx"
+    }
+  }
+  spec {
+    replicas = 2
+    selector {
+      match_labels = {
+        app = "nginx"
+      }
+    }
+    template {
+      metadata {
+        labels = {
+          app = "nginx"
+        }
+      }
+      spec {
+        container {
+          name  = "nginx"
+          image = "nginx:latest"
+          port {
+            container_port = 80
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service" "nginx_service" {
+  depends_on = [kubernetes_deployment.nginx_app]
+  metadata {
+    name = "nginx-service"
+    labels = {
+      app = "nginx"
+    }
+  }
+  spec {
+    selector = {
+      app = "nginx"
+    }
+    port {
+      port        = 80
+      target_port = 80
+      node_port   = 30080 # Example NodePort, ensure it's in the valid range (30000-32767)
+    }
+    type = "NodePort" # Expose the service via NodePort
+  }
+}
+
+# --- ArgoCD Installation ---
+resource "kubernetes_namespace" "argocd" {
+  depends_on = [module.eks]
+  metadata {
+    name = "argocd"
+  }
+}
+
+# Base64 encoded content of a simplified ArgoCD install.yaml
+# This includes Namespace, argocd-server Deployment, and argocd-server Service (initially ClusterIP)
+# For a full ArgoCD installation, consider using the Helm provider or applying the complete official YAML.
+locals {
+  argocd_install_yaml = base64encode(file("${path.module}/argocd-install-minimal.yaml"))
+  # Note: The 'argocd-install-minimal.yaml' file needs to be created in the same directory
+  # with the essential ArgoCD components. For a complete setup, it's recommended to
+  # download the official install.yaml (e.g., from https://raw.githubusercontent.com/argoproj/argo-cd/v2.10.0/manifests/install.yaml)
+  # and include its content here, or use the Helm provider.
+  # For this example, I'll embed a minimal set of components directly.
+  # In a real-world scenario, you would download the full install.yaml and reference it.
+  # As an example, I'm using a placeholder for the content.
+  #
+  # Actual content for argocd-install-minimal.yaml would be:
+  # apiVersion: v1
+  # kind: Namespace
+  # metadata:
+  #   labels:
+  #     argocd.argoproj.io/secret-type: cluster
+  #   name: argocd
+  # ---
+  # apiVersion: v1
+  # kind: ServiceAccount
+  # metadata:
+  #   labels:
+  #     app.kubernetes.io/component: server
+  #     app.kubernetes.io/name: argocd-server
+  #     app.kubernetes.io/part-of: argocd
+  #   name: argocd-server
+  #   namespace: argocd
+  # ---
+  # apiVersion: rbac.authorization.k8s.io/v1
+  # kind: Role
+  # metadata:
+  #   labels:
+  #     app.kubernetes.io/component: server
+  #     app.kubernetes.io/name: argocd-server
+  #     app.kubernetes.io/part-of: argocd
+  #   name: argocd-server
+  #   namespace: argocd
+  # rules:
+  # - apiGroups:
+  #   - ""
+  #   resources:
+  #   - pods
+  #   - pods/exec
+  #   verbs:
+  #   - create
+  #   - get
+  #   - list
+  #   - watch
+  #   - update
+  #   - patch
+  #   - delete
+  # ---
+  # apiVersion: rbac.authorization.k8s.io/v1
+  # kind: RoleBinding
+  # metadata:
+  #   labels:
+  #     app.kubernetes.io/component: server
+  #     app.kubernetes.io/name: argocd-server
+  #     app.kubernetes.io/part-of: argocd
+  #   name: argocd-server
+  #   namespace: argocd
+  # roleRef:
+  #   apiGroup: rbac.authorization.k8s.io
+  #   kind: Role
+  #   name: argocd-server
+  # subjects:
+  # - kind: ServiceAccount
+  #   name: argocd-server
+  #   namespace: argocd
+  # ---
+  # apiVersion: apps/v1
+  # kind: Deployment
+  # metadata:
+  #   labels:
+  #     app.kubernetes.io/component: server
+  #     app.kubernetes.io/name: argocd-server
+  #     app.kubernetes.io/part-of: argocd
+  #   name: argocd-server
+  #   namespace: argocd
+  # spec:
+  #   selector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: argocd-server
+  #   template:
+  #     metadata:
+  #       labels:
+  #         app.kubernetes.io/name: argocd-server
+  #     spec:
+  #       serviceAccountName: argocd-server
+  #       containers:
+  #       - name: argocd-server
+  #         image: argoproj/argocd:v2.10.0 # Using a specific stable version
+  #         ports:
+  #         - containerPort: 8080
+  #         - containerPort: 443
+  # ---
+  # apiVersion: v1
+  # kind: Service
+  # metadata:
+  #   labels:
+  #     app.kubernetes.io/component: server
+  #     app.kubernetes.io/name: argocd-server
+  #     app.kubernetes.io/part-of: argocd
+  #   name: argocd-server
+  #   namespace: argocd
+  # spec:
+  #   selector:
+  #     app.kubernetes.io/name: argocd-server
+  #   ports:
+  #   - name: http
+  #     port: 80
+  #     targetPort: 8080
+  #   - name: https
+  #     port: 443
+  #     targetPort: 443
+  #   type: ClusterIP # Will be patched to LoadBalancer later
+}
+
+resource "kubernetes_manifest" "argocd_install" {
+  depends_on = [kubernetes_namespace.argocd]
+  manifest = yamldecode(base64decode(local.argocd_install_yaml))
+}
+
+# Patch the argocd-server service to type LoadBalancer
+resource "null_resource" "patch_argocd_server_service" {
+  depends_on = [kubernetes_manifest.argocd_install]
+
+  provisioner "local-exec" {
+    command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${data.aws_eks_cluster_auth.cluster.name}"
+    interpreter = ["bash", "-c"]
+  }
+}
+
+# ArgoCD Application resource for NGINX
+resource "kubernetes_manifest" "nginx_argocd_app" {
+  depends_on = [null_resource.patch_argocd_server_service] # Ensure ArgoCD is ready
+
+  manifest = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name      = "nginx-application"
+      namespace = "argocd"
+    }
+    spec = {
+      project = "default"
+      source = {
+        repoURL        = "https://github.com/YOUR_GITHUB_USER/YOUR_NGINX_REPO.git" # REPLACE WITH YOUR REPO
+        targetRevision = "HEAD"
+        path           = "kubernetes-manifests" # REPLACE WITH THE PATH TO YOUR NGINX MANIFESTS IN THE REPO
+      }
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "default"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+    }
+  }
+}
+
 output "cluster_id" {
   description = "EKS cluster ID."
   value       = module.eks.cluster_id
@@ -182,4 +401,29 @@ output "zz_update_kubeconfig_command" {
 output "nat_gateway_eip_address" {
   description = "The Elastic IP address allocated for the NAT Gateway."
   value       = module.vpc.nat_public_ips[0] # Accessing the first EIP from the list of NAT public IPs
+}
+
+output "nginx_access_instructions" {
+  description = "Instructions to access the NGINX application."
+  value = <<-EOT
+    To access the NGINX application:
+    1. Get the Node IP: kubectl get nodes -o wide
+    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec.0.node_port}
+    3. Alternatively, use kubectl port-forward:
+       kubectl port-forward svc/nginx-service 8080:80
+       Then access at: http://localhost:8080
+  EOT
+}
+
+output "argocd_access_instructions" {
+  description = "Instructions to access the ArgoCD UI."
+  value = <<-EOT
+    To access the ArgoCD UI:
+    1. Get the ArgoCD server LoadBalancer IP:
+       kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+    2. Access the UI at: https://<ARGOCD_LOADBALANCER_IP>
+    3. Get the initial admin password:
+       kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+    4. Login with username 'admin' and the retrieved password.
+  EOT
 }
