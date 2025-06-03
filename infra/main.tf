@@ -14,12 +14,12 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "your-tf-state-bucket-name"  # Your S3 bucket for Terraform state
-    key            = "eks-cluster/terraform.tfstate"  # Path to your state file in S3
-    region         = "us-west-1"  # AWS Region
-    encrypt        = true
-    dynamodb_table = "your-dynamodb-table"  # DynamoDB table for locking state
-  }
+  bucket         = "my-terraform-state-bucket"
+  key            = "eks-cluster/terraform.tfstate"
+  region         = "us-west-1"
+  encrypt        = true
+  dynamodb_table = "terraform-locks"
+}
 }
 
 # AWS Provider Configuration
