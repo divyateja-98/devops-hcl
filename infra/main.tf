@@ -14,7 +14,7 @@ terraform {
   }
 
   backend "s3" {
-  bucket         = "my-terraform-state-bucket-1"
+  bucket         = "my-terraform-state-bucket-1-us-west-1"
   key            = "eks-cluster/terraform.tfstate"
   region         = "us-west-1"
   encrypt        = true

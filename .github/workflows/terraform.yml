@@ -38,7 +38,7 @@ jobs:
       - name: Terraform Init
         run: |
           terraform -chdir=infra init -input=false \
-            -backend-config="bucket=my-terraform-state-bucket-1" \
+            -backend-config="bucket=my-terraform-state-bucket-1-us-west-1" \
             -backend-config="key=eks-cluster/terraform.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}"
 
