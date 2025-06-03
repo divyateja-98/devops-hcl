@@ -55,6 +55,10 @@ resource "aws_eip" "nat_gateway_eip" {
   tags = {
     Name = "${var.cluster_name}-nat-gateway-eip"
   }
+  # Prevent accidental deletion of the EIP
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 module "vpc" {
