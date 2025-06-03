@@ -188,6 +188,7 @@ resource "null_resource" "eks_api_ready" {
   }
 }
 
+
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
   depends_on = [null_resource.eks_api_ready]
