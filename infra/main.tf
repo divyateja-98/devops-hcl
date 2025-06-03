@@ -10,8 +10,7 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.7.1"
     }
-    # Add time provider for explicit waits
-    time = {
+    time = { # Ensure this provider is declared
       source  = "hashicorp/time"
       version = ">= 0.7.0"
     }
@@ -31,22 +30,10 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  # Individual Kubernetes resources will depend on null_resource.eks_api_ready or time_sleep.
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  
-  # Option 1: Use direct token (your current approach)
-  token = data.aws_eks_cluster_auth.cluster.token
-
-  # Option 2: More robust exec authentication (uncomment to use)
-  # exec {
-  #   api_version = "client.authentication.k8s.io/v1beta1"
-  #   command     = "aws"
-  #   args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.aws_region]
-  # }
-
-  # IMPORTANT for debugging if TLS issues persist (remove for production)
-  # insecure_skip_tls_verify = true
+  token                  = data.aws_eks_cluster_auth.cluster.token
+  # No need for insecure_skip_tls_verify unless specifically debugging TLS
 }
 
 variable "aws_region" {
@@ -100,7 +87,7 @@ resource "aws_security_group" "all_worker_mgmt" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]  # TODO: Restrict this in production environments
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -117,7 +104,7 @@ resource "aws_security_group" "all_worker_mgmt" {
 
 module "eks" {
   source          = "terraform-aws-modules/eks/aws"
-  version         = "20.8.4"
+  version         = "20.8.4" # Stay with this version if forced, otherwise upgrade to latest stable
   cluster_name    = var.cluster_name
   cluster_version = var.kubernetes_version
   subnet_ids      = module.vpc.private_subnets
@@ -144,23 +131,19 @@ module "eks" {
     cluster = "demo"
   }
 
-  # **CRITICAL FIX 1: Enable EKS Endpoint Public Access and wait for readiness**
-  # This makes the EKS API reachable from outside the VPC.
-  # If you *only* want private access, you MUST run Terraform from an EC2 instance in the same VPC.
+  # Keep public and private access enabled.
+  # If running from local machine, public access is required.
   cluster_endpoint_public_access  = true
-  cluster_endpoint_private_access = true # Keep private access too for internal VPC resources
+  cluster_endpoint_private_access = true
 
-  # **CRITICAL FIX 2: Wait for the EKS cluster endpoint to be reachable**
-  # This makes the EKS module itself block until the API server responds.
-  wait_for_cluster_endpoint = true
-
-  # Set a higher timeout for the EKS cluster creation itself if needed
-  # This is for the AWS provider, not the Kubernetes provider
-  timeouts = {
-    create = "60m" # Default is often 30m, increase if EKS creation itself times out
+  # Use 'cluster_timeouts' for the module version 20.8.4
+  # This passes the timeouts down to the underlying aws_eks_cluster resource.
+  cluster_timeouts = {
+    create = "60m" # EKS cluster creation can take 20-40 minutes
     update = "60m"
     delete = "60m"
   }
+  # Removed: wait_for_cluster_endpoint = true (not directly supported as input in this module version)
 }
 
 data "aws_eks_cluster_auth" "cluster" {
@@ -168,18 +151,15 @@ data "aws_eks_cluster_auth" "cluster" {
   name       = var.cluster_name
 }
 
-# **CRITICAL FIX 3: Add an explicit time_sleep to allow API server to fully stabilize**
-# Even after 'wait_for_cluster_endpoint', the Kubernetes API can be temperamental.
+# **CRITICAL for this module version:** Add an explicit time_sleep to allow API server to fully stabilize
+# This is the primary mechanism to address API readiness in module 20.8.4
 resource "time_sleep" "wait_for_eks_api_stability" {
   depends_on      = [module.eks] # Ensure EKS cluster creation (and internal waits) are done
-  create_duration = "120s"       # Adjust as needed (e.g., "90s", "180s")
-  # Use longer durations if initial runs still timeout.
+  create_duration = "180s"       # INCREASED: Start with a higher duration, e.g., 3 minutes.
+                                 # You might need to increase this further if timeouts persist.
 }
 
-
 # Resource to wait for EKS API server to be ready and reachable
-# This null_resource is still valuable for verifying kubectl connectivity *after*
-# the Terraform Kubernetes provider is expected to work.
 resource "null_resource" "eks_api_ready" {
   depends_on = [module.eks, time_sleep.wait_for_eks_api_stability] # Depend on time_sleep now
 
@@ -187,6 +167,7 @@ resource "null_resource" "eks_api_ready" {
     command = <<-EOT
       echo "Waiting for EKS cluster '${data.aws_eks_cluster_auth.cluster.name}' to be active..."
       # Use aws eks wait cluster-active for a robust wait
+      # This waits until the EKS cluster state is 'ACTIVE'
       aws eks wait cluster-active --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region}
 
       echo "EKS cluster is active. Updating kubeconfig..."
@@ -195,19 +176,21 @@ resource "null_resource" "eks_api_ready" {
 
       echo "Verifying kubectl access using the specific kubeconfig and context..."
       # Verify kubectl can connect after kubeconfig update
+      # Use a loop with retries for kubectl verification
+      RETRY_COUNT=0
+      MAX_RETRIES=10
+      while ! kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        echo "kubectl access failed. Retrying in 15s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
+        sleep 15
+        RETRY_COUNT=$((RETRY_COUNT+1))
+      done
+
       if kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null; then
-        echo "kubectl access confirmed."
+        echo "kubectl access confirmed after $((RETRY_COUNT)) retries."
         exit 0
       else
-        echo "kubectl access failed after kubeconfig update. Retrying in 10s..."
-        sleep 10
-        if kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null; then
-          echo "kubectl access confirmed on retry."
-          exit 0
-        else
-          echo "kubectl access still failed after retry."
-          exit 1
-        fi
+        echo "kubectl access failed after $MAX_RETRIES attempts. Manual intervention may be needed."
+        exit 1
       fi
     EOT
     interpreter = ["bash", "-c"]
@@ -280,8 +263,6 @@ resource "kubernetes_namespace" "argocd" {
 }
 
 locals {
-  # Embedded content of a minimal ArgoCD install.yaml
-  # This avoids the "no file exists" error by including the YAML directly.
   argocd_install_yaml = base64encode(<<-EOT
 apiVersion: v1
 kind: Namespace
@@ -391,31 +372,27 @@ spec:
 EOT
 )
 
-  # Parse the base64 decoded YAML into a list of manifests
   argocd_manifests = [
     for doc_str in split("---", base64decode(local.argocd_install_yaml)) :
     yamldecode(doc_str) if trimspace(doc_str) != ""
   ]
 }
 
-# Apply each ArgoCD manifest using a for_each loop
 resource "kubernetes_manifest" "argocd_install" {
   depends_on = [kubernetes_namespace.argocd, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
   for_each   = { for i, manifest in local.argocd_manifests : "${lookup(manifest, "kind", "unknown")}-${lookup(manifest.metadata, "name", "unknown")}-${i}" => manifest }
   manifest   = each.value
 }
 
-# Patch the argocd-server service to type LoadBalancer
 resource "null_resource" "patch_argocd_server_service" {
   depends_on = [kubernetes_manifest.argocd_install, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
 
   provisioner "local-exec" {
-    command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${data.aws_eks_cluster_auth.cluster.name}"
+    command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${var.cluster_name}-tf-managed" # Use the specific context
     interpreter = ["bash", "-c"]
   }
 }
 
-# ArgoCD Application resource for NGINX
 resource "kubernetes_manifest" "nginx_argocd_app" {
   depends_on = [null_resource.patch_argocd_server_service, null_resource.eks_api_ready, time_sleep.wait_for_eks_api_stability]
 
@@ -429,9 +406,9 @@ resource "kubernetes_manifest" "nginx_argocd_app" {
     spec = {
       project = "default"
       source = {
-        repoURL        = "https://github.com/YOUR_GITHUB_USER/YOUR_NGINX_REPO.git" # REPLACE WITH YOUR REPO
+        repoURL        = "https://github.com/YOUR_GITHUB_USER/YOUR_NGINX_REPO.git"
         targetRevision = "HEAD"
-        path           = "kubernetes-manifests" # REPLACE WITH THE PATH TO YOUR NGINX MANIFESTS IN THE REPO
+        path           = "kubernetes-manifests"
       }
       destination = {
         server    = "https://kubernetes.default.svc"
@@ -480,10 +457,9 @@ output "zz_update_kubeconfig_command" {
   )
 }
 
-# Output the allocated EIP address directly from the VPC module's output
 output "nat_gateway_eip_address" {
   description = "The Elastic IP address allocated for the NAT Gateway."
-  value       = module.vpc.nat_public_ips[0] # Accessing the first EIP from the list of NAT public IPs
+  value       = module.vpc.nat_public_ips[0]
 }
 
 output "nginx_access_instructions" {
