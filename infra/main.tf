@@ -1,4 +1,4 @@
-# Define the Terraform backend and provider configurations
+# Terraform backend and provider configurations
 terraform {
   required_version = ">= 0.12"
 
@@ -14,12 +14,12 @@ terraform {
   }
 
   backend "s3" {
-  bucket         = "my-terraform-state-bucket-1-us-west-1"
-  key            = "eks-cluster/terraform.tfstate"
-  region         = "us-west-1"
-  encrypt        = true
-  dynamodb_table = "terraform-locks"
-}
+    bucket         = "my-terraform-state-bucket-1-us-west-1"
+    key            = "eks-cluster/terraform.tfstate"
+    region         = "us-west-1"
+    encrypt        = true
+    dynamodb_table = "terraform-locks"
+  }
 }
 
 # AWS Provider Configuration
@@ -34,7 +34,7 @@ provider "kubernetes" {
   token                  = data.aws_eks_cluster_auth.cluster.token
 }
 
-# Declare variables for flexibility
+# Variables for flexibility
 variable "aws_region" {
   default = "us-west-1"
 }
@@ -50,6 +50,9 @@ variable "cluster_name" {
 variable "vpc_cidr" {
   default = "10.0.0.0/16"
 }
+
+# Fetch available AZs
+data "aws_availability_zones" "available" {}
 
 # VPC Module Configuration
 module "vpc" {
@@ -71,7 +74,30 @@ module "vpc" {
   }
 }
 
-data "aws_availability_zones" "available" {}
+# Define the security group for EKS managed worker nodes (needed by the EKS module)
+resource "aws_security_group" "all_worker_mgmt" {
+  name        = "${var.cluster_name}-worker-sg"
+  description = "Security group for EKS managed worker nodes"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]  # Consider tightening this for production
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-worker-sg"
+  }
+}
 
 # EKS Cluster Setup
 module "eks" {
@@ -104,6 +130,11 @@ module "eks" {
   }
 }
 
+# Data source for EKS cluster auth token (needed by kubernetes provider)
+data "aws_eks_cluster_auth" "cluster" {
+  name = module.eks.cluster_id
+}
+
 # Outputs
 output "cluster_id" {
   description = "EKS cluster ID."
@@ -116,7 +147,7 @@ output "cluster_endpoint" {
 }
 
 output "cluster_security_group_id" {
-  description = "Security group ids attached to the cluster control plane."
+  description = "Security group IDs attached to the cluster control plane."
   value       = module.eks.cluster_security_group_id
 }
 
@@ -130,5 +161,6 @@ output "oidc_provider_arn" {
 }
 
 output "zz_update_kubeconfig_command" {
-  value = format("%s %s %s %s", "aws eks update-kubeconfig --name", module.eks.cluster_id, "--region", var.aws_region)
+  description = "Command to update kubeconfig for the cluster"
+  value       = format("aws eks update-kubeconfig --name %s --region %s", module.eks.cluster_id, var.aws_region)
 }
