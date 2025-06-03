@@ -132,9 +132,38 @@ data "aws_eks_cluster_auth" "cluster" {
   name       = var.cluster_name
 }
 
+# Resource to wait for EKS API server to be ready
+resource "null_resource" "eks_api_ready" {
+  depends_on = [module.eks] # Ensure EKS cluster creation is initiated
+
+  provisioner "local-exec" {
+    # This command assumes kubectl is configured to connect to the EKS cluster
+    # by an external process (e.g., a GitHub Actions step running `aws eks update-kubeconfig`).
+    # It waits for the API server to be reachable before proceeding.
+    command = <<-EOT
+      echo "Waiting for EKS API server to be ready..."
+      MAX_ATTEMPTS=30 # Max attempts (e.g., 30 * 10 seconds = 5 minutes)
+      ATTEMPT=0
+      while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+        # Use --raw=/healthz to check the API server's health endpoint
+        if kubectl get --raw=/healthz --context ${data.aws_eks_cluster_auth.cluster.name} &> /dev/null; then
+          echo "EKS API server is ready."
+          exit 0
+        fi
+        echo "EKS API not ready yet. Retrying in 10 seconds..."
+        sleep 10
+        ATTEMPT=$((ATTEMPT+1))
+      done
+      echo "EKS API server did not become ready within the expected time."
+      exit 1
+    EOT
+    interpreter = ["bash", "-c"]
+  }
+}
+
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
-  depends_on = [module.eks] # Ensure EKS is ready before deploying applications
+  depends_on = [module.eks, null_resource.eks_api_ready] # Ensure EKS is ready and API is reachable
   metadata {
     name = "nginx-deployment"
     labels = {
@@ -168,7 +197,7 @@ resource "kubernetes_deployment" "nginx_app" {
 }
 
 resource "kubernetes_service" "nginx_service" {
-  depends_on = [kubernetes_deployment.nginx_app]
+  depends_on = [kubernetes_deployment.nginx_app, null_resource.eks_api_ready]
   metadata {
     name = "nginx-service"
     labels = {
@@ -190,7 +219,7 @@ resource "kubernetes_service" "nginx_service" {
 
 # --- ArgoCD Installation ---
 resource "kubernetes_namespace" "argocd" {
-  depends_on = [module.eks]
+  depends_on = [module.eks, null_resource.eks_api_ready]
   metadata {
     name = "argocd"
   }
@@ -317,14 +346,14 @@ EOT
 
 # Apply each ArgoCD manifest using a for_each loop
 resource "kubernetes_manifest" "argocd_install" {
-  depends_on = [kubernetes_namespace.argocd]
+  depends_on = [kubernetes_namespace.argocd, null_resource.eks_api_ready]
   for_each   = { for i, manifest in local.argocd_manifests : "${lookup(manifest, "kind", "unknown")}-${lookup(manifest.metadata, "name", "unknown")}-${i}" => manifest }
   manifest   = each.value
 }
 
 # Patch the argocd-server service to type LoadBalancer
 resource "null_resource" "patch_argocd_server_service" {
-  depends_on = [kubernetes_manifest.argocd_install]
+  depends_on = [kubernetes_manifest.argocd_install, null_resource.eks_api_ready]
 
   provisioner "local-exec" {
     command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${data.aws_eks_cluster_auth.cluster.name}"
@@ -334,7 +363,7 @@ resource "null_resource" "patch_argocd_server_service" {
 
 # ArgoCD Application resource for NGINX
 resource "kubernetes_manifest" "nginx_argocd_app" {
-  depends_on = [null_resource.patch_argocd_server_service] # Ensure ArgoCD is ready
+  depends_on = [null_resource.patch_argocd_server_service, null_resource.eks_api_ready]
 
   manifest = {
     apiVersion = "argoproj.io/v1alpha1"
