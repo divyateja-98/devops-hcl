@@ -408,7 +408,7 @@ output "nginx_access_instructions" {
   value = <<-EOT
     To access the NGINX application:
     1. Get the Node IP: kubectl get nodes -o wide
-    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec.port[0].node_port}
+    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec[0].port[0].node_port}
     3. Alternatively, use kubectl port-forward:
        kubectl port-forward svc/nginx-service 8080:80
        Then access at: http://localhost:8080
