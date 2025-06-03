@@ -145,60 +145,10 @@ data "aws_eks_cluster_auth" "cluster" {
   name       = var.cluster_name
 }
 
-resource "time_sleep" "wait_for_eks_api_stability" {
-  depends_on      = [module.eks]
-  create_duration = "300s" # Keep at 5 minutes, or increase if necessary
-}
-
-resource "null_resource" "eks_api_ready" {
-  depends_on = [module.eks, time_sleep.wait_for_eks_api_stability]
-
-  provisioner "local-exec" {
-    environment = {
-      MAX_RETRIES         = 20
-      RETRY_INTERVAL      = 15
-      CLUSTER_NAME        = var.cluster_name
-      AWS_REGION          = var.aws_region
-      KUBECONFIG_PATH     = "/tmp/kubeconfig-${var.cluster_name}"
-      CLUSTER_ENDPOINT_NAME = data.aws_eks_cluster_auth.cluster.name
-    }
-
-    command = <<-EOT
-      echo "Waiting for EKS cluster '${CLUSTER_ENDPOINT_NAME}' to be active..."
-      aws eks wait cluster-active --name "${CLUSTER_ENDPOINT_NAME}" --region "${AWS_REGION}"
-
-      echo "EKS cluster is active. Updating kubeconfig..."
-      aws eks update-kubeconfig --name "${CLUSTER_ENDPOINT_NAME}" --region "${AWS_REGION}" --kubeconfig "${KUBECONFIG_PATH}" --alias "${CLUSTER_NAME}-tf-managed"
-
-      echo "Verifying kubectl access using the specific kubeconfig and context..."
-      
-      CURRENT_RETRY_COUNT=0
-      
-      while ! kubectl --kubeconfig "${KUBECONFIG_PATH}" --context "${CLUSTER_NAME}-tf-managed" get ns &> /dev/null && [ "$CURRENT_RETRY_COUNT" -lt "$MAX_RETRIES" ]; do
-        # FIX: Assign the problematic string to a shell variable first
-        RETRY_MSG="kubectl access failed. Retrying in ${RETRY_INTERVAL}s... (Attempt $((CURRENT_RETRY_COUNT+1))/$MAX_RETRIES)"
-        echo "$RETRY_MSG"
-        
-        sleep "$RETRY_INTERVAL"
-        CURRENT_RETRY_COUNT=$((CURRENT_RETRY_COUNT+1))
-      done
-
-      if kubectl --kubeconfig "${KUBECONFIG_PATH}" --context "${CLUSTER_NAME}-tf-managed" get ns &> /dev/null; then
-        echo "kubectl access confirmed after $((CURRENT_RETRY_COUNT)) retries."
-        exit 0
-      else
-        echo "kubectl access still failed after $MAX_RETRIES attempts. This indicates a persistent connectivity issue to the EKS API."
-        echo "Possible reasons: Network ACLs, Security Groups, DNS resolution, or EKS control plane not fully healthy."
-        exit 1
-      fi
-    EOT
-    interpreter = ["bash", "-c"]
-  }
-}
-
 # --- NGINX Application Deployment ---
 resource "kubernetes_deployment" "nginx_app" {
-  depends_on = [null_resource.eks_api_ready]
+  # Now directly depends on the EKS module
+  depends_on = [module.eks]
   metadata {
     name = "nginx-deployment"
     labels = {
@@ -254,7 +204,8 @@ resource "kubernetes_service" "nginx_service" {
 
 # --- ArgoCD Installation ---
 resource "kubernetes_namespace" "argocd" {
-  depends_on = [null_resource.eks_api_ready]
+  # Now directly depends on the EKS module
+  depends_on = [module.eks]
   metadata {
     name = "argocd"
   }
@@ -377,23 +328,16 @@ EOT
 }
 
 resource "kubernetes_manifest" "argocd_install" {
-  depends_on = [kubernetes_namespace.argocd, null_resource.eks_api_ready]
+  depends_on = [kubernetes_namespace.argocd] # Now depends directly on the namespace
   for_each   = { for i, manifest in local.argocd_manifests : "${lookup(manifest, "kind", "unknown")}-${lookup(manifest.metadata, "name", "unknown")}-${i}" => manifest }
   manifest   = each.value
 }
 
-resource "null_resource" "patch_argocd_server_service" {
-  depends_on = [kubernetes_manifest.argocd_install, null_resource.eks_api_ready]
-
-  provisioner "local-exec" {
-    command = "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}' --context ${var.cluster_name}-tf-managed"
-    interpreter = ["bash", "-c"]
-  }
-}
+# null_resource "patch_argocd_server_service" has been removed, as it relied on kubectl configuration from the removed null_resource.eks_api_ready.
+# You will need to manually patch the ArgoCD service to LoadBalancer type after apply.
 
 resource "kubernetes_manifest" "nginx_argocd_app" {
-  depends_on = [null_resource.patch_argocd_server_service, null_resource.eks_api_ready]
-
+  depends_on = [kubernetes_manifest.argocd_install] # Now depends directly on argocd_install
   manifest = {
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
@@ -447,10 +391,10 @@ output "oidc_provider_arn" {
 }
 
 output "zz_update_kubeconfig_command" {
-  description = "Command to update kubeconfig for the cluster"
+  description = "Command to update kubeconfig for the cluster (run this manually after apply)"
   value       = (
     module.eks.cluster_id != "" && module.eks.cluster_id != null ?
-    format("aws eks update-kubeconfig --name %s --region %s --kubeconfig /tmp/kubeconfig-%s --alias %s-tf-managed", var.cluster_name, var.aws_region, var.cluster_name, var.cluster_name) :
+    format("aws eks update-kubeconfig --name %s --region %s", var.cluster_name, var.aws_region) :
     "Cluster not created yet"
   )
 }
@@ -464,23 +408,27 @@ output "nginx_access_instructions" {
   description = "Instructions to access the NGINX application."
   value = <<-EOT
     To access the NGINX application:
-    1. Get the Node IP: kubectl get nodes -o wide --kubeconfig /tmp/kubeconfig-${var.cluster_name} --context ${var.cluster_name}-tf-managed
-    2. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec[0].port[0].node_port}
-    3. Alternatively, use kubectl port-forward:
-       kubectl port-forward svc/nginx-service 8080:80 --kubeconfig /tmp/kubeconfig-${var.cluster_name} --context ${var.cluster_name}-tf-managed
+    1. FIRST, run the command from 'zz_update_kubeconfig_command' output to configure kubectl.
+    2. Get the Node IP: kubectl get nodes -o wide
+    3. Access NGINX via NodePort: http://<NODE_IP>:${kubernetes_service.nginx_service.spec[0].port[0].node_port}
+    4. Alternatively, use kubectl port-forward:
+       kubectl port-forward svc/nginx-service 8080:80
        Then access at: http://localhost:8080
   EOT
 }
 
 output "argocd_access_instructions" {
-  description = "Instructions to access the ArgoCD UI."
+  description = "Instructions to access the ArgoCD UI. NOTE: The ArgoCD service is initially ClusterIP. You will need to manually patch it to LoadBalancer."
   value = <<-EOT
     To access the ArgoCD UI:
-    1. Get the ArgoCD server LoadBalancer IP:
-       kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' --kubeconfig /tmp/kubeconfig-${var.cluster_name} --context ${var.cluster_name}-tf-managed || kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}' --kubeconfig /tmp/kubeconfig-${var.cluster_name} --context ${var.cluster_name}-tf-managed
-    2. Access the UI at: https://<ARGOCD_LOADBALANCER_IP>
-    3. Get the initial admin password:
-       kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" --kubeconfig /tmp/kubeconfig-${var.cluster_name} --context ${var.cluster_name}-tf-managed | base64 -d
-    4. Login with username 'admin' and the retrieved password.
+    1. FIRST, run the command from 'zz_update_kubeconfig_command' output to configure kubectl.
+    2. Manually patch the argocd-server service to LoadBalancer:
+       kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+    3. Get the ArgoCD server LoadBalancer IP:
+       kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+    4. Access the UI at: https://<ARGOCD_LOADBALANCER_IP>
+    5. Get the initial admin password:
+       kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+    6. Login with username 'admin' and the retrieved password.
   EOT
 }
