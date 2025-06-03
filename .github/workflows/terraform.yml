@@ -32,7 +32,7 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v1
         with:
-          terraform_version: '1.6.6'  # latest as of now, adjust if needed
+          terraform_version: '1.6.6'
 
       # Terraform Init
       - name: Terraform Init
@@ -40,14 +40,14 @@ jobs:
           -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
           -backend-config="key=eks-cluster/terraform.tfstate" \
           -backend-config="region=${{ secrets.AWS_REGION }}"
-        working-directory: ./infrastructure
+        working-directory: ./infra
 
       # Terraform Plan
       - name: Terraform Plan
         run: terraform plan -input=false -out=tfplan
-        working-directory: ./infrastructure
+        working-directory: ./infra
 
       # Terraform Apply
       - name: Terraform Apply
         run: terraform apply -input=false -auto-approve tfplan
-        working-directory: ./infrastructure
+        working-directory: ./infra
