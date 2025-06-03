@@ -32,19 +32,7 @@ provider "aws" {
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  
-  # Option 1 (prefer this if it works): Use direct token from data source
-  token = data.aws_eks_cluster_auth.cluster.token
-
-  # Option 2 (more robust for authentication, uncomment if Option 1 fails AFTER connectivity is resolved):
-  # exec {
-  #   api_version = "client.authentication.k8s.io/v1beta1"
-  #   command     = "aws"
-  #   args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.aws_region]
-  # }
-
-  # REMOVED: timeout = "10m" -- This argument is not supported by the kubernetes provider in this version.
-  # Individual resource timeouts are configured within resource blocks if supported.
+  token                  = data.aws_eks_cluster_auth.cluster.token
 }
 
 variable "aws_region" {
@@ -172,23 +160,23 @@ resource "null_resource" "eks_api_ready" {
 
       echo "EKS cluster is active. Updating kubeconfig..."
       KUBECONFIG_PATH="/tmp/kubeconfig-${var.cluster_name}"
-      aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig $KUBECONFIG_PATH --alias ${var.cluster_name}-tf-managed
+      aws eks update-kubeconfig --name ${data.aws_eks_cluster_auth.cluster.name} --region ${var.aws_region} --kubeconfig \$KUBECONFIG_PATH --alias ${var.cluster_name}-tf-managed
 
       echo "Verifying kubectl access using the specific kubeconfig and context..."
       RETRY_COUNT=0
       MAX_RETRIES=20
       RETRY_INTERVAL=15 # Define RETRY_INTERVAL as a shell variable here
-      while ! kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        echo "kubectl access failed. Retrying in ${RETRY_INTERVAL}s... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
-        sleep $RETRY_INTERVAL
-        RETRY_COUNT=$((RETRY_COUNT+1))
+      while ! kubectl --kubeconfig \$KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null && [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
+        echo "kubectl access failed. Retrying in \${RETRY_INTERVAL}s... (Attempt \$((RETRY_COUNT+1))/\$MAX_RETRIES)"
+        sleep \$RETRY_INTERVAL
+        RETRY_COUNT=\$((RETRY_COUNT+1))
       done
 
-      if kubectl --kubeconfig $KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null; then
-        echo "kubectl access confirmed after $((RETRY_COUNT)) retries."
+      if kubectl --kubeconfig \$KUBECONFIG_PATH --context ${var.cluster_name}-tf-managed get ns &> /dev/null; then
+        echo "kubectl access confirmed after \$((RETRY_COUNT)) retries."
         exit 0
       else
-        echo "kubectl access still failed after $MAX_RETRIES attempts. This indicates a persistent connectivity issue to the EKS API."
+        echo "kubectl access still failed after \$MAX_RETRIES attempts. This indicates a persistent connectivity issue to the EKS API."
         echo "Possible reasons: Network ACLs, Security Groups, DNS resolution, or EKS control plane not fully healthy."
         exit 1
       fi
