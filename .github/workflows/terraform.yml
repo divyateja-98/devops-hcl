@@ -44,22 +44,11 @@ jobs:
         # IMPORTANT: Ensure 'my-cluster-new' matches the 'name' in your aws_eks_cluster resource
         # in your main.tf file (e.g., var.cluster_name if you use a variable)
 
-      - name: Install Helm
-        uses: azure/setup-helm@v1 # Action to install Helm CLI
-
       - name: Install ArgoCD via Helm
         run: |
-          # Create the Helm home directory if it doesn't exist
-          mkdir -p ~/.helm
-          mkdir -p ~/.config/helm # For Helm 3 configuration
-
-          echo "Adding ArgoCD Helm repository..."
+          helm version
           helm repo add argo https://argoproj.github.io/argo-helm
-
-          echo "Updating Helm repositories..."
           helm repo update
-
-          echo "Installing/Upgrading ArgoCD..."
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd --create-namespace \
             --set server.service.type=LoadBalancer
