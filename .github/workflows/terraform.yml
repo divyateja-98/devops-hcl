@@ -49,16 +49,20 @@ jobs:
 
       - name: Install ArgoCD via Helm
         run: |
+          # Create the Helm home directory if it doesn't exist
+          mkdir -p ~/.helm
+          mkdir -p ~/.config/helm # For Helm 3 configuration
+
           echo "Adding ArgoCD Helm repository..."
           helm repo add argo https://argoproj.github.io/argo-helm
+
+          echo "Updating Helm repositories..."
           helm repo update
 
           echo "Installing/Upgrading ArgoCD..."
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd --create-namespace \
-            --set server.service.type=LoadBalancer # Expose ArgoCD UI via AWS LoadBalancer
-            # --set server.ingress.enabled=true # Alternative for Ingress Controller
-            # --set server.ingress.hosts={argo.example.com} # If using Ingress
+            --set server.service.type=LoadBalancer
 
       - name: Wait for ArgoCD server to be ready
         # Give ArgoCD server time to spin up before trying to create applications
