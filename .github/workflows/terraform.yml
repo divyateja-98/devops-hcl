@@ -47,16 +47,28 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v1 # Action to install Helm CLI
 
+      - name: Initialize Helm Repositories
+        # This step explicitly ensures the Helm repository configuration is set up for Helm 3.
+        run: |
+          echo "Ensuring Helm 3 configuration directory exists..."
+          mkdir -p "$HOME/.config/helm"
+          echo "Attempting to update Helm repositories to create repositories.yaml if missing..."
+          # Use --kubeconfig /dev/null to avoid connection issues during initial repo setup
+          # Use || true to prevent the step from failing if no repos are yet added
+          helm repo update --kubeconfig /dev/null || true
+          echo "Helm repositories initialized."
+
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq # <--- ADDED THIS STEP!
+        run: sudo apt-get update && sudo apt-get install -y jq # Ensures jq is available for JSON parsing
 
       - name: Install ArgoCD via Helm
         run: |
-          mkdir -p ~/.helm # Ensures Helm 3 configuration directories exist
-          mkdir -p ~/.config/helm # Ensures Helm 3 configuration directories exist
           echo "Adding ArgoCD Helm repository..."
           helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
+
+          echo "Updating Helm repositories (including newly added Argo repo)..."
+          helm repo update # This will fetch chart metadata from the added repo
+
           echo "Installing/Upgrading ArgoCD..."
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd --create-namespace \
@@ -85,11 +97,11 @@ jobs:
           echo "argocd_password=$ARGOCD_PASSWORD" >> $GITHUB_OUTPUT
           echo "ArgoCD password retrieved."
 
-      - name: Get ArgoCD Server LoadBalancer Hostname/IP # <--- Corrected indentation
+      - name: Get ArgoCD Server LoadBalancer Hostname/IP
         id: argocd_lb_step
         run: |
           echo "Waiting for ArgoCD LoadBalancer to provision an external IP/hostname..."
-          MAX_ATTEMPTS=120
+          MAX_ATTEMPTS=120 # Max 10 minutes (120 * 5s)
           SLEEP_TIME=5
           ARGOCD_LB_ENDPOINT=""
           for i in $(seq 1 $MAX_ATTEMPTS); do
@@ -112,11 +124,11 @@ jobs:
           fi
           echo "argocd_lb_endpoint=$ARGOCD_LB_ENDPOINT" >> $GITHUB_OUTPUT
 
-      - name: Get NGINX Application LoadBalancer Hostname/IP # <--- Corrected indentation
+      - name: Get NGINX Application LoadBalancer Hostname/IP
         id: nginx_lb_step
         run: |
           echo "Waiting for NGINX LoadBalancer to provision an external IP/hostname..."
-          MAX_ATTEMPTS=120 # Adjust if your LoadBalancer provisioning is very slow
+          MAX_ATTEMPTS=120 # Max 10 minutes (120 * 5s)
           SLEEP_TIME=5
           NGINX_LB_ENDPOINT=""
 
