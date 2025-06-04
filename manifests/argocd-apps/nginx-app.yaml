@@ -10,7 +10,7 @@ spec:
     server: https://kubernetes.default.svc
   project: default
   source:
-    repoURL: https://github.com/divyateja-98/devops-hcl.git # IMPORTANT: REPLACE THIS
+    repoURL: https://github.com/divyateja-98/devops-hcl.git
     targetRevision: devo
     path: manifests
   syncPolicy:
