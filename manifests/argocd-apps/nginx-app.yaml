@@ -10,7 +10,7 @@ spec:
     server: https://kubernetes.default.svc
   project: default # Use the 'default' project in ArgoCD
   source:
-    repoURL: https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPOSITORY_NAME.git # IMPORTANT: REPLACE THIS
+    repoURL: https://github.com/divyateja-98/devops-hcl.git # IMPORTANT: REPLACE THIS
     targetRevision: devo # The branch ArgoCD should monitor for changes
     path: manifests # Path within your repository to the NGINX manifests (your nginx-deployment.yaml and nginx-service.yaml are directly under 'manifests')
   syncPolicy:
