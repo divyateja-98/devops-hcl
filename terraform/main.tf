@@ -33,7 +33,7 @@ resource "aws_subnet" "subnet1" {
 }
 
 resource "aws_eks_cluster" "eks" {
-  name     = "my-cluster"
+  name     = "my-cluster-new"
   role_arn = aws_iam_role.eks_role.arn
 
   vpc_config {
