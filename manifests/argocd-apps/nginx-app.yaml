@@ -3,19 +3,19 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: nginx-application
-  namespace: argocd # ArgoCD Application resource typically lives in the argocd namespace
+  namespace: argocd
 spec:
   destination:
-    namespace: default # The namespace where NGINX will be deployed on EKS
+    namespace: default
     server: https://kubernetes.default.svc
-  project: default # Use the 'default' project in ArgoCD
+  project: default
   source:
     repoURL: https://github.com/divyateja-98/devops-hcl.git # IMPORTANT: REPLACE THIS
-    targetRevision: devo # The branch ArgoCD should monitor for changes
-    path: manifests # Path within your repository to the NGINX manifests (your nginx-deployment.yaml and nginx-service.yaml are directly under 'manifests')
+    targetRevision: devo
+    path: manifests
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
-    - CreateNamespace=true # Optional: ArgoCD will create the target namespace if it doesn't exist
+    - CreateNamespace=true
