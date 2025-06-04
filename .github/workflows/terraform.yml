@@ -76,62 +76,33 @@ jobs:
           echo "argocd_password=$ARGOCD_PASSWORD" >> $GITHUB_OUTPUT
           echo "ArgoCD password retrieved."
 
-      - name: Get ArgoCD Server LoadBalancer Hostname/IP
-        id: argocd_lb_step
-        run: |
-          echo "Waiting for ArgoCD LoadBalancer to provision an external IP/hostname..."
-          for i in $(seq 1 120); do # Wait up to 10 minutes (120 * 5s)
-            # Try to get hostname first, then fall back to IP if hostname isn't available (e.g., for NLB)
-            ARGOCD_LB_ENDPOINT=$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-            if [ -n "$ARGOCD_LB_ENDPOINT" ]; then
-              echo "ArgoCD LoadBalancer endpoint found: $ARGOCD_LB_ENDPOINT"
-              break
-            fi
-            echo "Attempt $i: ArgoCD LoadBalancer endpoint not yet available, waiting 5 seconds..."
-            sleep 5
-          done
-          if [ -z "$ARGOCD_LB_ENDPOINT" ]; then
-            echo "Error: ArgoCD LoadBalancer endpoint not found after timeout. Check 'kubectl get svc argocd-server -n argocd'."
-            exit 1
-          fi
-          echo "argocd_lb_endpoint=$ARGOCD_LB_ENDPOINT" >> $GITHUB_OUTPUT
-
-          - name: Get NGINX Application LoadBalancer Hostname/IP
-          id: nginx_lb_step
+          - name: Get ArgoCD Server LoadBalancer Hostm/IP
+          id: argocd_lb_step
           run: |
-            echo "Waiting for NGINX LoadBalancer to provision an external IP/hostname..."
-            # Max attempts: 120 (10 minutes total wait, 5 seconds per attempt)
+            echo "Waiting for ArgoCD LoadBalancer to provision an external IP/hostname..."
             MAX_ATTEMPTS=120
             SLEEP_TIME=5
-            NGINX_LB_ENDPOINT=""
-  
+            ARGOCD_LB_ENDPOINT=""
             for i in $(seq 1 $MAX_ATTEMPTS); do
-              # Attempt to get the hostname first, then IP if hostname is empty
-              # Using '|| true' to prevent script from exiting if kubectl command fails/returns empty initially
-              LB_STATUS=$(kubectl get svc nginx-service -n default -o json 2>/dev/null || true)
-  
+              LB_STATUS=$(kubectl get svc argocd-server -n argocd -o json 2>/dev/null || true)
               if [ -n "$LB_STATUS" ]; then
-                # Check if the ingress field exists and is populated
-                NGINX_LB_ENDPOINT=$(echo "$LB_STATUS" | jq -r '.status.loadBalancer.ingress[0].hostname' 2>/dev/null || echo "$LB_STATUS" | jq -r '.status.loadBalancer.ingress[0].ip' 2>/dev/null)
+                ARGOCD_LB_ENDPOINT=$(echo "$LB_STATUS" | jq -r '.status.loadBalancer.ingress[0].hostname' 2>/dev/null || echo "$LB_STATUS" | jq -r '.status.loadBalancer.ingress[0].ip' 2>/dev/null)
               fi
-  
-              if [ -n "$NGINX_LB_ENDPOINT" ] && [ "$NGINX_LB_ENDPOINT" != "null" ]; then
-                echo "NGINX LoadBalancer endpoint found: $NGINX_LB_ENDPOINT"
+              if [ -n "$ARGOCD_LB_ENDPOINT" ] && [ "$ARGOCD_LB_ENDPOINT" != "null" ]; then
+                echo "ArgoCD LoadBalancer endpoint found: $ARGOCD_LB_ENDPOINT"
                 break
               fi
-  
-              echo "Attempt $i/$MAX_ATTEMPTS: NGINX LoadBalancer endpoint not yet available. Waiting ${SLEEP_TIME} seconds..."
+              echo "Attempt $i/$MAX_ATTEMPTS: ArgoCD LoadBalancer endpoint not yet available, waiting ${SLEEP_TIME} seconds..."
               sleep $SLEEP_TIME
             done
-  
-            if [ -z "$NGINX_LB_ENDPOINT" ] || [ "$NGINX_LB_ENDPOINT" = "null" ]; then
-              echo "Error: NGINX LoadBalancer endpoint not found after $MAX_ATTEMPTS attempts (${MAX_ATTEMPTS * SLEEP_TIME} seconds)."
-              echo "Diagnostic Info: Check 'kubectl get svc nginx-service -n default -o yaml' for details."
-              kubectl get svc nginx-service -n default -o yaml || true # Print service details for debugging
-              exit 1 # Fail the step
+            if [ -z "$ARGOCD_LB_ENDPOINT" ] || [ "$ARGOCD_LB_ENDPOINT" = "null" ]; then
+              echo "Error: ArgoCD LoadBalancer endpoint not found after $MAX_ATTEMPTS attempts (${MAX_ATTEMPTS * SLEEP_TIME} seconds)."
+              echo "Diagnostic Info: Check 'kubectl get svc argocd-server -n argocd -o yaml' for details."
+              kubectl get svc argocd-server -n argocd -o yaml || true
+              exit 1
             fi
-  
-            echo "nginx_lb_endpoint=$NGINX_LB_ENDPOINT" >> $GITHUB_OUTPUT
+            echo "argocd_lb_endpoint=$ARGOCD_LB_ENDPOINT" >> $GITHUB_OUTPUT
+            
             
       - name: Output Access Information
         run: |
