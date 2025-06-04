@@ -1,3 +1,4 @@
+# .github/workflows/deploy-eks-argocd.yml
 name: Deploy EKS and ArgoCD
 
 on:
@@ -7,9 +8,10 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production # Optional: Link to a GitHub environment for better tracking and protection rules
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
       - name: Configure AWS Credentials
@@ -17,7 +19,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-1
+          aws-region: us-west-1 # Ensure this matches your Terraform 'var.region'
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -31,13 +33,108 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve
 
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest' # Or a specific version like 'v1.28.0' to match EKS control plane version
+
       - name: Update kubeconfig
+        # This command configures kubectl on the GitHub Actions runner to interact with your new EKS cluster
         run: aws eks update-kubeconfig --name my-cluster-new --region us-west-1
+        # IMPORTANT: Ensure 'my-cluster-new' matches the 'name' in your aws_eks_cluster resource
+        # in your main.tf file (e.g., var.cluster_name if you use a variable)
+
+      - name: Install Helm
+        uses: azure/setup-helm@v1 # Action to install Helm CLI
 
       - name: Install ArgoCD via Helm
         run: |
+          echo "Adding ArgoCD Helm repository..."
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
+
+          echo "Installing/Upgrading ArgoCD..."
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd --create-namespace \
-            --set server.service.type=LoadBalancer
+            --set server.service.type=LoadBalancer # Expose ArgoCD UI via AWS LoadBalancer
+            # --set server.ingress.enabled=true # Alternative for Ingress Controller
+            # --set server.ingress.hosts={argo.example.com} # If using Ingress
+
+      - name: Wait for ArgoCD server to be ready
+        # Give ArgoCD server time to spin up before trying to create applications
+        run: |
+          echo "Waiting for ArgoCD server pod to be available..."
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+          echo "ArgoCD server is ready."
+
+      - name: Deploy ArgoCD Application for NGINX
+        # This step creates the ArgoCD Application resource, telling ArgoCD to sync your NGINX manifests
+        run: |
+          echo "Applying ArgoCD Application manifest for NGINX..."
+          kubectl apply -f manifests/argocd-apps/nginx-app.yaml
+          echo "ArgoCD Application for NGINX deployed. ArgoCD will now begin syncing the NGINX app."
+
+      - name: Get ArgoCD Initial Admin Password
+        id: argocd_password_step
+        run: |
+          echo "Retrieving ArgoCD initial admin password..."
+          # The password is base64 encoded in the secret
+          ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+          echo "argocd_password=$ARGOCD_PASSWORD" >> $GITHUB_OUTPUT
+          echo "ArgoCD password retrieved."
+
+      - name: Get ArgoCD Server LoadBalancer Hostname/IP
+        id: argocd_lb_step
+        run: |
+          echo "Waiting for ArgoCD LoadBalancer to provision an external IP/hostname..."
+          for i in $(seq 1 120); do # Wait up to 10 minutes (120 * 5s)
+            # Try to get hostname first, then fall back to IP if hostname isn't available (e.g., for NLB)
+            ARGOCD_LB_ENDPOINT=$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$ARGOCD_LB_ENDPOINT" ]; then
+              echo "ArgoCD LoadBalancer endpoint found: $ARGOCD_LB_ENDPOINT"
+              break
+            fi
+            echo "Attempt $i: ArgoCD LoadBalancer endpoint not yet available, waiting 5 seconds..."
+            sleep 5
+          done
+          if [ -z "$ARGOCD_LB_ENDPOINT" ]; then
+            echo "Error: ArgoCD LoadBalancer endpoint not found after timeout. Check 'kubectl get svc argocd-server -n argocd'."
+            exit 1
+          fi
+          echo "argocd_lb_endpoint=$ARGOCD_LB_ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Get NGINX Application LoadBalancer Hostname/IP
+        id: nginx_lb_step
+        # Note: ArgoCD will manage the NGINX deployment. This step waits for the service it creates.
+        run: |
+          echo "Waiting for NGINX LoadBalancer to provision an external IP/hostname..."
+          for i in $(seq 1 120); do # Wait up to 10 minutes (120 * 5s)
+            NGINX_LB_ENDPOINT=$(kubectl get svc nginx-service -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || kubectl get svc nginx-service -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$NGINX_LB_ENDPOINT" ]; then
+              echo "NGINX LoadBalancer endpoint found: $NGINX_LB_ENDPOINT"
+              break
+            fi
+            echo "Attempt $i: NGINX LoadBalancer endpoint not yet available, waiting 5 seconds..."
+            sleep 5
+          done
+          if [ -z "$NGINX_LB_ENDPOINT" ]; then
+            echo "Error: NGINX LoadBalancer endpoint not found after timeout. Check 'kubectl get svc nginx-service -n default'."
+            exit 1
+          fi
+          echo "nginx_lb_endpoint=$NGINX_LB_ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Output Access Information
+        run: |
+          echo "=================================================================="
+          echo "                     Deployment Complete!                         "
+          echo "------------------------------------------------------------------"
+          echo "   EKS Cluster Name: my-cluster-new"
+          echo "   AWS Region: us-west-1"
+          echo ""
+          echo "   ArgoCD UI URL: https://${{ steps.argocd_lb_step.outputs.argocd_lb_endpoint }}"
+          echo "   ArgoCD Username: admin"
+          echo "   ArgoCD Initial Password: ${{ steps.argocd_password_step.outputs.argocd_password }}"
+          echo "   (Consider changing this password after first login for security!)"
+          echo ""
+          echo "   NGINX Application URL: http://${{ steps.nginx_lb_step.outputs.nginx_lb_endpoint }}"
+          echo "=================================================================="
